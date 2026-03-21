@@ -1,6 +1,6 @@
-# 🛡️ Chi Cục Thuế Anti-Scam API (Power by PhoBERT)
+# 🛡️ real-caller-api (Chi Cục Thuế Anti-Scam API)
 
-Hệ thống API phát hiện lừa đảo qua số điện thoại và nội dung hội thoại, sử dụng mô hình học sâu **PhoBERT** (Local) được tối ưu cho tiếng Việt.
+FastAPI backend for the Real Caller Android application. Hệ thống API phát hiện lừa đảo qua số điện thoại và nội dung hội thoại, sử dụng mô hình học sâu **PhoBERT** (Local) được tối ưu cho tiếng Việt.
 
 ## 🚀 Tính năng chính
 
@@ -89,3 +89,4 @@ python train_phobert.py
 ### Kiểm tra AI & Report (Test Scripts)
 - Test tính năng Check AI: `python test_ai_phobert.py`
 - Test tính năng gửi Báo cáo: `python test_report.py`
+
