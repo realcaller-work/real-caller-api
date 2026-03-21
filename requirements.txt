@@ -14,3 +14,5 @@ google-generativeai
 firebase-admin
 pyvi
 python-docx
+torch
+transformers

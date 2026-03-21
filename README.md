@@ -25,6 +25,11 @@ alembic revision --autogenerate -m "Update schema"
 alembic upgrade head
 ```
 
+### 3. Khởi chạy Server
+```bash
+uvicorn app.main:app --reload
+```
+
 ---
 
 ## 🛰️ Danh sách API & Body mẫu
