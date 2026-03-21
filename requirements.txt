@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+alembic
+psycopg2-binary
+python-dotenv
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+pytest
+httpx
+google-generativeai
+firebase-admin
+pyvi
+python-docx
