@@ -111,3 +111,18 @@ python train_phobert.py
 
 - Test tính năng Check AI: `python tests/test_ai_phobert.py`
 - Test tính năng gửi Báo cáo: `python tests/test_report.py`
+
+## Deployment (Render)
+
+1.  Create a new **Web Service** on Render.
+2.  Connect your repository.
+3.  Select **Python** as the environment.
+4.  **Build Command**: `pip install -r requirements.txt`
+5.  **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+6.  Add **Environment Variables**:
+    *   `DATABASE_URL`: Your PostgreSQL connection string.
+    *   `HF_TOKEN`: Your Hugging Face API token.
+    *   `SECRET_KEY`: A long random string for JWT.
+
+Render will automatically provide the `$PORT` variable, and the application is now configured to bind to it.
+

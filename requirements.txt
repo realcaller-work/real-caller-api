@@ -14,3 +14,6 @@ pyvi
 python-docx
 torch
 transformers
+requests
+gunicorn
+uvicorn[standard]

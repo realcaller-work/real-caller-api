@@ -5,6 +5,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Check Phone Scam API"
+    PORT: int = 8000
+
     
     # BACKEND_CORS_ORIGINS is a JSON-formatted list of strings
     # e.g: '["http://localhost", "http://localhost:4200", "http://localhost:3000"]'
