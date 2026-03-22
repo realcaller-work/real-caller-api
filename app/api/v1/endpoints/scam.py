@@ -129,63 +129,84 @@ def report_scam(
 ):
     norm_phone = normalize_phone(report_in.phone)
     
-    # 1. AI Analysis
+    # 1. Check db xem số đó là scam hay spam (Nếu đã có -> Trả về dữ liệu luôn)
+    scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
+    if scam_num:
+        # Vẫn tăng biến đếm và lưu log report của user hiện tại
+        scam_num.reportCount += 1
+        report_log = ScamReport(
+            phone=norm_phone,
+            deviceId=device_id,
+            reportType=report_in.type,
+            description=report_in.description,
+            evidence_urls=report_in.evidence_urls,
+            messages=report_in.messages
+        )
+        db.add(report_log)
+        db.commit()
+        
+        return {
+            "message": "Number already identified as scam/spam. Data returned.",
+            "is_scam": True,
+            "scam_type": scam_num.scam_type,
+            "risk_level": scam_num.risk_level,
+            "ai_analysis": None
+        }
+        
+    # 2. Nếu chưa có trong DB -> Dùng model AI check phone hoặc tin nhắn
     ai_result = ai_service.analyze_scam_report(
         description=report_in.description or "",
         messages=report_in.messages or [],
         evidence_urls=report_in.evidence_urls or []
     )
     
-    # Use AI classification directly
-    scam_type = report_in.type
-    risk_level = RiskLevel.MEDIUM
-    is_ai_vetted = True
-    
-    if ai_result:
-        is_scam = ai_result.get("is_scam", True)
-        # Fallback to OTHER if PhoBERT classifies as harmless or returns invalid type
-        scam_enum_vals = ["investment", "loan", "recruitment", "impersonation", "other"]
-        raw_type = ai_result.get("scam_type", scam_type)
-        scam_type = raw_type if raw_type in scam_enum_vals else "other"
-            
-        risk_level = ai_result.get("risk_level", "medium") if is_scam else "low"
-
-    # 2. Update/Create ScamNumber
-    scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
-    if scam_num:
-        scam_num.reportCount += 1
-        if is_ai_vetted:
-            scam_num.scam_type = scam_type
-            scam_num.risk_level = risk_level
-            scam_num.is_ai_vetted = True
-            scam_num.metadata_info = ai_result # Store full result
-    else:
-        scam_num = ScamNumber(
-            phone=norm_phone, 
-            scam_type=scam_type, 
-            risk_level=risk_level,
-            reportCount=1,
-            is_ai_vetted=is_ai_vetted,
-            metadata_info=ai_result if is_ai_vetted else None
-        )
-        db.add(scam_num)
-        
-    # 3. Save Detailed Report Log
+    # Lưu report log chung để Admin theo dõi (tuỳ chọn, nhưng nên có)
     report_log = ScamReport(
         phone=norm_phone,
         deviceId=device_id,
-        reportType=scam_type,
+        reportType=report_in.type,
         description=report_in.description,
         evidence_urls=report_in.evidence_urls,
         messages=report_in.messages
     )
     db.add(report_log)
-    db.commit()
     
-    return {
-        "message": "Report submitted and analyzed by AI successfully",
-        "ai_analysis": ai_result if is_ai_vetted else None
-    }
+    # Xác định theo AI
+    is_scam = ai_result.get("is_scam", True) if ai_result else True
+    
+    if is_scam:
+        # Lừa đảo hoặc spam -> Lưu vào dữ liệu lừa đảo hoặc spam theo dữ liệu AI
+        scam_enum_vals = ["investment", "loan", "recruitment", "impersonation", "other"]
+        raw_type = ai_result.get("scam_type", report_in.type) if ai_result else report_in.type
+        scam_type = raw_type if raw_type in scam_enum_vals else "other"
+            
+        risk_level = ai_result.get("risk_level", "medium") if ai_result else "medium"
+
+        new_scam_num = ScamNumber(
+            phone=norm_phone, 
+            scam_type=scam_type, 
+            risk_level=risk_level,
+            reportCount=1,
+            is_ai_vetted=True,
+            metadata_info=ai_result
+        )
+        db.add(new_scam_num)
+        db.commit()
+        
+        return {
+            "message": "Report analyzed and classified as scam/spam by AI",
+            "is_scam": True,
+            "ai_analysis": ai_result
+        }
+    else:
+        # Không làm gì nữa (Không ghi vào bảng ScamNumber blacklist)
+        db.commit()
+        
+        return {
+            "message": "Report analyzed but AI did not classify it as scam/spam",
+            "is_scam": False,
+            "ai_analysis": ai_result
+        }
 
 @router.get("/{phone}", response_model=scam_schema.ScamCheckResult)
 def get_scam_detail(

@@ -10,8 +10,6 @@ python-jose[cryptography]
 passlib[bcrypt]
 pytest
 httpx
-google-generativeai
-firebase-admin
 pyvi
 python-docx
 torch

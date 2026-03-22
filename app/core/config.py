@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # e.g: '["http://localhost", "http://localhost:4200", "http://localhost:3000"]'
     BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
 
-    SECRET_KEY: str = "your-secret-key"
+    SECRET_KEY: str = "change-this-secret-key-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
@@ -21,7 +21,10 @@ class Settings(BaseSettings):
             return v
         raise ValueError(v)
 
-    SQLALCHEMY_DATABASE_URI: str = "postgresql://postgres:29112004@localhost:5432/check-phone-scam"
+    SQLALCHEMY_DATABASE_URI: str = "postgresql://postgres:postgres@localhost:5432/db"
+    HF_TOKEN: str = ""
+    HF_API_URL: str = "huhuhu"
+    TEST_API_BASE_URL: str = "http://localhost:8000/api/v1"
 
     class Config:
         case_sensitive = True

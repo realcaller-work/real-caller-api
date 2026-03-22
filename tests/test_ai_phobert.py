@@ -1,10 +1,14 @@
 import asyncio
 import httpx
 import uuid
+import sys
+import os
+sys.path.append(os.getcwd())
+from app.core.config import settings
 
 async def test_report():
     print("🚀 Starting AI-Powered Report Test with local PhoBERT...")
-    base_url = "http://localhost:8888/api/v1"
+    base_url = settings.TEST_API_BASE_URL
     
     device_id = f"test-device-{uuid.uuid4().hex[:8]}"
     print(f"📱 Registering device: {device_id}")

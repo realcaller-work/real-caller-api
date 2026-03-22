@@ -1,11 +1,11 @@
 from app.models.scam_number import ScamType, RiskLevel
 from app.services.preprocessor import preprocessor
+from app.core.config import settings
 import json
 import os
 import time
+import requests
 from typing import List, Dict, Optional
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 # Mappings based on typically trained models.
 SCAM_CLASSES = ["harmless", "scam"]
@@ -13,25 +13,11 @@ SCAM_CLASSES = ["harmless", "scam"]
 class AIService:
     # Triggered reload to load fine-tuned model
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"DEBUG: Initializing PhoBERT on {self.device}")
-        
-        # In a real scenario, this would point to the fine-tuned local weights.
-        local_model_path = os.path.join(os.getcwd(), "phobert_scam_model")
-        if os.path.exists(local_model_path):
-            self.model_name = local_model_path
+        self.is_ready = bool(settings.HF_TOKEN)
+        if self.is_ready:
+            print(f"✅ HF Inference API configured with endpoint: {settings.HF_API_URL}")
         else:
-            self.model_name = "vinai/phobert-base" 
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name, num_labels=2)
-            self.model.to(self.device)
-            self.model.eval()
-            self.is_ready = True
-            print("✅ PhoBERT loaded successfully")
-        except Exception as e:
-            print(f"❌ Error loading PhoBERT: {e}")
-            self.is_ready = False
+            print("❌ Error: HF_TOKEN is missing. AI Service will use fallback mock analysis.")
 
     def analyze_scam_report(
         self, 
@@ -68,50 +54,72 @@ class AIService:
              return self._mock_analysis(description)
 
         try:
-            # 3. Tokenize input
-            inputs = self.tokenizer(combined_text, return_tensors="pt", truncation=True, max_length=256, padding=True)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            # 3. Request HF API
+            headers = {
+                "Accept" : "application/json",
+                "Authorization": f"Bearer {settings.HF_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "inputs": combined_text,
+                "parameters": {}
+            }
             
-            # 4. Inference
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                logits = outputs.logits
-                probs = torch.nn.functional.softmax(logits, dim=-1)
+            response = requests.post(settings.HF_API_URL, headers=headers, json=payload, timeout=15)
+            response.raise_for_status()
+            
+            # 4. Parse output
+            api_result = response.json()
+            print(f"DEBUG: HF API Raw Result: {api_result}")
+            
+            # Assuming output format: [[{"label": "LABEL_1", "score": 0.9}, {"label": "LABEL_0", "score": 0.1}]]
+            # Or: [{"label": "LABEL_1", "score": 0.9}]
+            if isinstance(api_result, list):
+                if len(api_result) > 0 and isinstance(api_result[0], list):
+                    predictions = api_result[0]
+                else:
+                    predictions = api_result
+            else:
+                predictions = []
+
+            is_scam = False
+            conf_val = 0.0
+            
+            if predictions:
+                # Get prediction with highest score
+                best_pred = max(predictions, key=lambda x: x.get('score', 0))
+                conf_val = best_pred.get('score', 0)
+                label = best_pred.get('label', '').upper()
                 
-                # Get prediction
-                confidence, predicted_class_idx = torch.max(probs, dim=-1)
-                
-                conf_val = confidence.item()
-                class_idx = predicted_class_idx.item()
-                
-                # Check mapping (1 is scam, 0 is harmless)
-                is_scam = (class_idx == 1)
-                
-                # Since PhoBERT predicts Scam vs Not_Scam, use keyword analysis to find scam type
-                info = self._mock_analysis(combined_text)
-                predicted_class = info['scam_type'] if is_scam else "unknown"
-                
-                # Assign Risk Based on Confidence
-                risk = "low"
-                if is_scam:
-                    risk = "medium"
-                    if conf_val > 0.8:
-                        risk = "critical"
-                    elif conf_val > 0.6:
-                        risk = "high"
+                # Based on standard SequenceClassification models, 'LABEL_1' or 'SCAM' or '1' is scam
+                if label in ["LABEL_1", "SCAM", "1", "TRUE"]:
+                    is_scam = True
                     
-                result = {
-                    "is_scam": is_scam,
-                    "scam_type": predicted_class if is_scam else "none",
-                    "risk_level": risk,
-                    "summary": f"Dự đoán bằng PhoBERT ({'Có Lừa Đảo' if is_scam else 'An Toàn'}). (Conf: {conf_val:.2f})",
-                    "confidence": conf_val
-                }
-                print(f"DEBUG: PhoBERT Prediction: {result}")
-                return result
+            # 5. Extract specific Scam Type using fallback strategy (since primary only returns binary)
+            info = self._mock_analysis(combined_text)
+            predicted_class = info['scam_type'] if is_scam else "none"
+            
+            # Assign Risk Based on Confidence
+            risk = "low"
+            if is_scam:
+                risk = "medium"
+                if conf_val > 0.8:
+                    risk = "critical"
+                elif conf_val > 0.6:
+                    risk = "high"
+                
+            result = {
+                "is_scam": is_scam,
+                "scam_type": predicted_class if is_scam else "none",
+                "risk_level": risk,
+                "summary": f"Dự đoán bằng Hugging Face ({'Có Lừa Đảo' if is_scam else 'An Toàn'}). (Conf: {conf_val:.2f})",
+                "confidence": conf_val
+            }
+            print(f"DEBUG: Hugging Face Prediction: {result}")
+            return result
                 
         except Exception as e:
-            print(f"DEBUG: PhoBERT Inference Error: {e}")
+            print(f"DEBUG: HF API Inference Error: {e}")
             return self._mock_analysis(description)
 
     def _mock_analysis(self, description: str) -> Dict:

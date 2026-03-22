@@ -14,11 +14,13 @@ FastAPI backend for the Real Caller Android application. Hệ thống API phát 
 ## 🛠️ Hướng dẫn cài đặt
 
 ### 1. Cài đặt Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. Khởi tạo Database & Migration
+
 ```bash
 # Tạo file migration & Nâng cấp DB
 alembic revision --autogenerate -m "Update schema"
@@ -26,6 +28,7 @@ alembic upgrade head
 ```
 
 ### 3. Khởi chạy Server
+
 ```bash
 uvicorn app.main:app --reload
 ```
@@ -35,8 +38,10 @@ uvicorn app.main:app --reload
 ## 🛰️ Danh sách API & Body mẫu
 
 ### 1. Đăng ký thiết bị (Lấy Token)
+
 - **Endpoint**: `POST /api/v1/device/register`
 - **Body Mẫu**:
+
 ```json
 {
   "deviceId": "unique_device_uuid_123",
@@ -46,9 +51,12 @@ uvicorn app.main:app --reload
 ```
 
 ### 2. Kiểm tra lừa đảo (Batch Check)
+
 Kiểm tra SĐT và phân tích đoạn chat cùng lúc.
+
 - **Endpoint**: `POST /api/v1/scam/check`
 - **Body Mẫu**:
+
 ```json
 {
   "phones": ["0944555666"],
@@ -56,8 +64,11 @@ Kiểm tra SĐT và phân tích đoạn chat cùng lúc.
     {
       "phone": "0987654321",
       "messages": [
-        {"sender": "Kẻ lạ", "content": "Anh có khoản nợ thuế cần nộp gấp tại link này..."},
-        {"sender": "Bạn", "content": "Tôi nộp rồi mà?"}
+        {
+          "sender": "Kẻ lạ",
+          "content": "Anh có khoản nợ thuế cần nộp gấp tại link này..."
+        },
+        { "sender": "Bạn", "content": "Tôi nộp rồi mà?" }
       ]
     }
   ]
@@ -65,17 +76,20 @@ Kiểm tra SĐT và phân tích đoạn chat cùng lúc.
 ```
 
 ### 3. Báo cáo lừa đảo (Report)
+
 Gửi báo cáo kèm nội dung chat để AI tự học.
+
 - **Endpoint**: `POST /api/v1/scam/report`
 - **Body Mẫu**:
+
 ```json
 {
   "phone": "+84944555666",
   "content": "Đối tượng mạo danh cán bộ thuế gọi điện hù dọa.",
   "scam_type": "impersonation",
   "messages": [
-    {"sender": "Đối tượng", "content": "Chào anh, tôi là cán bộ thuế..."},
-    {"sender": "Bạn", "content": "Link gì đây?"}
+    { "sender": "Đối tượng", "content": "Chào anh, tôi là cán bộ thuế..." },
+    { "sender": "Bạn", "content": "Link gì đây?" }
   ],
   "evidence_urls": ["https://imgur.com/screenshot1.png"]
 }
@@ -86,12 +100,14 @@ Gửi báo cáo kèm nội dung chat để AI tự học.
 ## 🧠 Quản lý AI Model
 
 ### Huấn luyện lại (Retraining)
+
 Tự động lấy dữ liệu từ những báo cáo thực tế trong Database để dạy cho AI:
+
 ```bash
 python train_phobert.py
 ```
 
 ### Kiểm tra AI & Report (Test Scripts)
-- Test tính năng Check AI: `python test_ai_phobert.py`
-- Test tính năng gửi Báo cáo: `python test_report.py`
 
+- Test tính năng Check AI: `python tests/test_ai_phobert.py`
+- Test tính năng gửi Báo cáo: `python tests/test_report.py`
