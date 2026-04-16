@@ -6,17 +6,17 @@ from sqlalchemy.sql import func
 from app.models.base import Base
 
 class ScamType(str, Enum):
-    INVESTMENT = "investment"
-    LOAN = "loan"
-    RECRUITMENT = "recruitment"
-    IMPERSONATION = "impersonation"
-    OTHER = "other"
+    INVESTMENT = "INVESTMENT"
+    LOAN = "LOAN"
+    RECRUITMENT = "RECRUITMENT"
+    IMPERSONATION = "IMPERSONATION"
+    OTHER = "OTHER"
 
 class RiskLevel(str, Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
 
 class ScamNumber(Base):
     __tablename__ = "scam_numbers"

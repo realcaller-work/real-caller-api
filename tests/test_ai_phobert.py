@@ -49,7 +49,7 @@ async def test_report():
         }
 
         check_res = await client.post(
-            f"{base_url}/scam/check",
+            f"{base_url}/scam/check-conversations",
             json=check_data,
             headers=headers
         )

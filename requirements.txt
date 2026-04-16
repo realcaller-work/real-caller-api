@@ -16,4 +16,7 @@ torch
 transformers
 requests
 gunicorn
-uvicorn[standard]
+firebase-admin
+email-validator
+google-genai
+# accelerate # Required for transformers Trainer on some systems

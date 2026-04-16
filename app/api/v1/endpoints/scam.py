@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from jose import jwt
 from app.db.session import get_db
 from app.core.config import settings
-from app.core.security import ALGORITHM
+from app.api.deps import get_current_user
+from app.models.user import User
 from app.models.scam_number import ScamNumber, RiskLevel
 from app.models.scam_report import ScamReport
 from app.schemas import scam as scam_schema
@@ -12,131 +11,181 @@ from app.services.utils import normalize_phone
 from app.services.ai import ai_service
 
 router = APIRouter()
-security = HTTPBearer()
-
-def get_current_device_id(auth: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    token = auth.credentials
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        return payload.get("sub")
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-@router.post("/check", response_model=scam_schema.ScamCheckResponse)
-def check_scam(
-    request: scam_schema.ScamCheckRequest,
+@router.post("/check-phones", response_model=scam_schema.ScamCheckResponse)
+def check_phones(
+    request: scam_schema.ScamCheckPhonesRequest,
     db: Session = Depends(get_db),
-    device_id: str = Depends(get_current_device_id)
+    current_user: User = Depends(get_current_user)
 ):
-    # Extract all phones to query DB
-    all_phones = []
-    if request.phones:
-        all_phones.extend(request.phones)
-    if request.conversations:
-        all_phones.extend([c.phone for c in request.conversations])
+    normalized_phones = list(set([normalize_phone(p) for p in request.phones]))
+    scam_entries = db.query(ScamNumber).filter(ScamNumber.phone.in_(normalized_phones)).all()
+    scam_map = {entry.phone: entry for entry in scam_entries}
+    
+    user_entries = db.query(User).filter(User.phone.in_(normalized_phones)).all()
+    user_map = {entry.phone: entry for entry in user_entries}
+    
+    results = []
+    processed_phones = set()
+    
+    for phone in request.phones:
+        norm = normalize_phone(phone)
+        if norm in processed_phones:
+            continue
         
+        processed_phones.add(norm)
+        db_scam = scam_map.get(norm)
+        db_user = user_map.get(norm)
+        
+        if db_scam:
+            # Determine if scaffolded as scam or spam based on risk_level
+            t = "scam" if db_scam.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
+            results.append({
+                "phone": phone,
+                "type": t,
+                "scam_info": {
+                    "scam_type": db_scam.scam_type,
+                    "risk_level": db_scam.risk_level,
+                    "reports": db_scam.reportCount,
+                    "ai_confidence": 0.0
+                },
+                "user_info": None
+            })
+        elif db_user:
+            results.append({
+                "phone": phone,
+                "type": "normal",
+                "scam_info": None,
+                "user_info": {
+                    "fullName": db_user.fullName,
+                    "email": db_user.email,
+                    "birthday": db_user.birthday,
+                    "gender": db_user.gender,
+                    "is_verified": db_user.is_verified
+                }
+            })
+        else:
+            results.append({
+                "phone": phone,
+                "type": "unknown",
+                "scam_info": None,
+                "user_info": None
+            })
+            
+    return {"results": results}
+
+@router.post("/check-conversations", response_model=scam_schema.ScamCheckResponse)
+def check_conversations(
+    request: scam_schema.ScamCheckConversationsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    all_phones = [c.phone for c in request.conversations]
     normalized_phones = list(set([normalize_phone(p) for p in all_phones]))
     
     scam_entries = db.query(ScamNumber).filter(ScamNumber.phone.in_(normalized_phones)).all()
     scam_map = {entry.phone: entry for entry in scam_entries}
     
+    user_entries = db.query(User).filter(User.phone.in_(normalized_phones)).all()
+    user_map = {entry.phone: entry for entry in user_entries}
+    
     results = []
     processed_phones = set()
     
-    # Run conversations through AI if provided
-    if request.conversations:
-        for conv in request.conversations:
-            norm = normalize_phone(conv.phone)
-            processed_phones.add(norm)
-            db_scam = scam_map.get(norm)
+    for conv in request.conversations:
+        norm = normalize_phone(conv.phone)
+        processed_phones.add(norm)
+        db_scam = scam_map.get(norm)
+        db_user = user_map.get(norm)
+        
+        # Use AI if there are messages
+        ai_res = None
+        if conv.messages:
+            # Convert the typed objects into dictionaries for AI service
+            messages_dict = [m.model_dump() for m in conv.messages]
             
-            # Use AI if there are messages
-            ai_res = None
-            if conv.messages:
-                # Convert the typed objects into dictionaries for AI service
-                messages_dict = [m.model_dump() for m in conv.messages]
-                
-                ai_res = ai_service.analyze_scam_report(
-                    description="",
-                    messages=messages_dict,
-                    evidence_urls=[]
-                )
+            ai_res = ai_service.analyze_scam_report(
+                description="",
+                messages=messages_dict,
+                evidence_urls=[]
+            )
+        
+        # Combine DB result and AI result
+        is_scam = False
+        scam_type = None
+        risk_level = None
+        reports = 0
+        confidence = 0.0
+        
+        # Read from DB first
+        if db_scam:
+            is_scam = True
+            scam_type = db_scam.scam_type
+            risk_level = db_scam.risk_level
+            reports = db_scam.reportCount
             
-            # Combine DB result and AI result
-            is_scam = False
-            scam_type = None
-            risk_level = None
-            reports = 0
-            confidence = 0.0
+        # If AI evaluates to scam, it supplements or overrides
+        if ai_res and ai_res.get("is_scam"):
+            is_scam = True
+            scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
+            raw_type = str(ai_res.get("scam_type", "OTHER")).upper()
+            scam_type = raw_type if raw_type in scam_enum_vals else "OTHER"
+            risk_level = str(ai_res.get("risk_level", "MEDIUM")).upper()
+            confidence = ai_res.get("confidence", 0.0)
             
-            # Read from DB first
-            if db_scam:
-                is_scam = True
-                scam_type = db_scam.scam_type
-                risk_level = db_scam.risk_level
-                reports = db_scam.reportCount
-                
-            # If AI evaluates to scam, it supplements or overrides
-            if ai_res and ai_res.get("is_scam"):
-                is_scam = True
-                scam_enum_vals = ["investment", "loan", "recruitment", "impersonation", "other"]
-                raw_type = ai_res.get("scam_type", "other")
-                scam_type = raw_type if raw_type in scam_enum_vals else "other"
-                risk_level = ai_res.get("risk_level", "medium")
-                confidence = ai_res.get("confidence", 0.0)
-                
+        if is_scam:
+            t = "scam" if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
             results.append({
                 "phone": conv.phone,
-                "isScam": is_scam,
-                "scam_type": scam_type,
-                "risk_level": risk_level,
-                "reports": reports,
-                "ai_confidence": confidence
+                "type": t,
+                "scam_info": {
+                    "scam_type": scam_type,
+                    "risk_level": risk_level,
+                    "reports": reports,
+                    "ai_confidence": confidence
+                },
+                "user_info": None
             })
-            
-    # Also handle the bare request.phones ensuring no duplicates
-    if request.phones:
-        for phone in request.phones:
-            norm = normalize_phone(phone)
-            if norm in processed_phones:
-                continue
-            
-            processed_phones.add(norm)
-            if norm in scam_map:
-                entry = scam_map[norm]
-                results.append({
-                    "phone": phone,
-                    "isScam": True,
-                    "scam_type": entry.scam_type,
-                    "risk_level": entry.risk_level,
-                    "reports": entry.reportCount,
-                    "ai_confidence": 0.0
-                })
-            else:
-                results.append({
-                    "phone": phone,
-                    "isScam": False,
-                    "ai_confidence": 0.0
-                })
+        elif db_user:
+            results.append({
+                "phone": conv.phone,
+                "type": "normal",
+                "scam_info": None,
+                "user_info": {
+                    "fullName": db_user.fullName,
+                    "email": db_user.email,
+                    "birthday": db_user.birthday,
+                    "gender": db_user.gender,
+                    "is_verified": db_user.is_verified
+                }
+            })
+        else:
+            results.append({
+                "phone": conv.phone,
+                "type": "unknown",
+                "scam_info": None,
+                "user_info": None
+            })
             
     return {"results": results}
 
-@router.post("/report")
+@router.post("/report", response_model=scam_schema.ScamCheckResult)
 def report_scam(
     report_in: scam_schema.ScamReportCreate,
     db: Session = Depends(get_db),
-    device_id: str = Depends(get_current_device_id)
+    current_user: User = Depends(get_current_user)
 ):
     norm_phone = normalize_phone(report_in.phone)
     
-    # 1. Check db xem số đó là scam hay spam (Nếu đã có -> Trả về dữ liệu luôn)
+    # 1. Look up in both DB tables first
+    db_user = db.query(User).filter(User.phone == norm_phone).first()
     scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
+    
     if scam_num:
         # Vẫn tăng biến đếm và lưu log report của user hiện tại
         scam_num.reportCount += 1
         report_log = ScamReport(
             phone=norm_phone,
-            deviceId=device_id,
+            deviceId=str(current_user.id),
             reportType=report_in.type,
             description=report_in.description,
             evidence_urls=report_in.evidence_urls,
@@ -145,15 +194,20 @@ def report_scam(
         db.add(report_log)
         db.commit()
         
+        t = "scam" if scam_num.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
         return {
-            "message": "Number already identified as scam/spam. Data returned.",
-            "is_scam": True,
-            "scam_type": scam_num.scam_type,
-            "risk_level": scam_num.risk_level,
-            "ai_analysis": None
+            "phone": report_in.phone,
+            "type": t,
+            "scam_info": {
+                "scam_type": scam_num.scam_type,
+                "risk_level": scam_num.risk_level,
+                "reports": scam_num.reportCount,
+                "ai_confidence": 0.0
+            },
+            "user_info": None
         }
         
-    # 2. Nếu chưa có trong DB -> Dùng model AI check phone hoặc tin nhắn
+    # 2. Nếu chưa có trong danh sách đen -> Dùng AI AI check phone hoặc tin nhắn
     ai_result = ai_service.analyze_scam_report(
         description=report_in.description or "",
         messages=report_in.messages or [],
@@ -163,7 +217,7 @@ def report_scam(
     # Lưu report log chung để Admin theo dõi (tuỳ chọn, nhưng nên có)
     report_log = ScamReport(
         phone=norm_phone,
-        deviceId=device_id,
+        deviceId=str(current_user.id),
         reportType=report_in.type,
         description=report_in.description,
         evidence_urls=report_in.evidence_urls,
@@ -176,11 +230,13 @@ def report_scam(
     
     if is_scam:
         # Lừa đảo hoặc spam -> Lưu vào dữ liệu lừa đảo hoặc spam theo dữ liệu AI
-        scam_enum_vals = ["investment", "loan", "recruitment", "impersonation", "other"]
-        raw_type = ai_result.get("scam_type", report_in.type) if ai_result else report_in.type
-        scam_type = raw_type if raw_type in scam_enum_vals else "other"
+        scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
+        raw_type_in = ai_result.get("scam_type", report_in.type) if ai_result else report_in.type
+        raw_type = str(raw_type_in).upper()
+        scam_type = raw_type if raw_type in scam_enum_vals else "OTHER"
             
-        risk_level = ai_result.get("risk_level", "medium") if ai_result else "medium"
+        risk_level = str(ai_result.get("risk_level", "MEDIUM") if ai_result else "MEDIUM").upper()
+        confidence = ai_result.get("confidence", 0.0) if ai_result else 0.0
 
         new_scam_num = ScamNumber(
             phone=norm_phone, 
@@ -193,19 +249,41 @@ def report_scam(
         db.add(new_scam_num)
         db.commit()
         
+        t = "scam" if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
         return {
-            "message": "Report analyzed and classified as scam/spam by AI",
-            "is_scam": True,
-            "ai_analysis": ai_result
+            "phone": report_in.phone,
+            "type": t,
+            "scam_info": {
+                "scam_type": scam_type,
+                "risk_level": risk_level,
+                "reports": 1,
+                "ai_confidence": confidence
+            },
+            "user_info": None
         }
     else:
         # Không làm gì nữa (Không ghi vào bảng ScamNumber blacklist)
         db.commit()
         
+        if db_user:
+            return {
+                "phone": report_in.phone,
+                "type": "normal",
+                "scam_info": None,
+                "user_info": {
+                    "fullName": db_user.fullName,
+                    "email": db_user.email,
+                    "birthday": db_user.birthday,
+                    "gender": db_user.gender,
+                    "is_verified": db_user.is_verified
+                }
+            }
+        
         return {
-            "message": "Report analyzed but AI did not classify it as scam/spam",
-            "is_scam": False,
-            "ai_analysis": ai_result
+            "phone": report_in.phone,
+            "type": "unknown",
+            "scam_info": None,
+            "user_info": None
         }
 
 @router.get("/{phone}", response_model=scam_schema.ScamCheckResult)
@@ -215,13 +293,38 @@ def get_scam_detail(
 ):
     norm_phone = normalize_phone(phone)
     scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
-    if not scam_num:
-        return {"phone": phone, "isScam": False}
+    db_user = db.query(User).filter(User.phone == norm_phone).first()
+    
+    if scam_num:
+        t = "scam" if scam_num.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
+        return {
+            "phone": phone,
+            "type": t,
+            "scam_info": {
+                "scam_type": scam_num.scam_type,
+                "risk_level": scam_num.risk_level,
+                "reports": scam_num.reportCount,
+                "ai_confidence": 0.0
+            },
+            "user_info": None
+        }
+    elif db_user:
+        return {
+            "phone": phone,
+            "type": "normal",
+            "scam_info": None,
+            "user_info": {
+                "fullName": db_user.fullName,
+                "email": db_user.email,
+                "birthday": db_user.birthday,
+                "gender": db_user.gender,
+                "is_verified": db_user.is_verified
+            }
+        }
     
     return {
         "phone": phone,
-        "isScam": True,
-        "scam_type": scam_num.scam_type,
-        "risk_level": scam_num.risk_level,
-        "reports": scam_num.reportCount
+        "type": "unknown",
+        "scam_info": None,
+        "user_info": None
     }

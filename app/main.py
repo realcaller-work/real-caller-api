@@ -9,6 +9,34 @@ from app.models.base import Base
 from app.models.device import Device
 from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport
+from app.models.user import User
+
+import os
+import json
+import base64
+import firebase_admin
+from firebase_admin import credentials
+
+try:
+    if settings.FIREBASE_CREDENTIALS_JSON:
+        # Load from base64 string
+        try:
+            cred_dict = json.loads(base64.b64decode(settings.FIREBASE_CREDENTIALS_JSON).decode('utf-8'))
+        except (ValueError, TypeError, base64.binascii.Error):
+            # Fallback to direct json string parse
+            cred_dict = json.loads(settings.FIREBASE_CREDENTIALS_JSON)
+            
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        print("✅ Firebase Admin initialized from Secret Env (FIREBASE_CREDENTIALS_JSON).")
+    elif os.path.exists(settings.FIREBASE_CREDENTIALS_PATH):
+        cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
+        firebase_admin.initialize_app(cred)
+        print("✅ Firebase Admin initialized from file.")
+    else:
+        print("⚠️ Warning: Firebase credentials not found.")
+except ValueError:
+    pass # App already initialized (sometimes occurs in hot reload)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -17,10 +45,7 @@ app = FastAPI(
 
 # Removed static mount for uploads since the API is redundant
 
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-
+# Removed startup event trying to recreate tables (handled by Alembic)
 # Set all CORS enabled origins
 if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(

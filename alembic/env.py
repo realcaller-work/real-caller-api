@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.models.base import Base
 
 # Import all models here so they are registered with Base.metadata
+from app.models.user import User
 from app.models.device import Device
 from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport

@@ -50,16 +50,28 @@ uvicorn app.main:app --reload
 }
 ```
 
-### 2. Kiểm tra lừa đảo (Batch Check)
+### 2. Kiểm tra danh sách SĐT (Check Phones)
 
-Kiểm tra SĐT và phân tích đoạn chat cùng lúc.
+Kiểm tra một danh sách các SĐT trong csdl.
 
-- **Endpoint**: `POST /api/v1/scam/check`
+- **Endpoint**: `POST /api/v1/scam/check-phones`
 - **Body Mẫu**:
 
 ```json
 {
-  "phones": ["0944555666"],
+  "phones": ["0944555666", "0987654321"]
+}
+```
+
+### 3. Kiểm tra phân tích hội thoại chữ (Check Conversations)
+
+Phân tích AI kết hợp check nhanh cho đoạn chat.
+
+- **Endpoint**: `POST /api/v1/scam/check-conversations`
+- **Body Mẫu**:
+
+```json
+{
   "conversations": [
     {
       "phone": "0987654321",

@@ -24,8 +24,11 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     SQLALCHEMY_DATABASE_URI: str = "postgresql://postgres:postgres@localhost:5432/db"
+    FIREBASE_CREDENTIALS_PATH: str = "firebase-adminsdk.json"
+    FIREBASE_CREDENTIALS_JSON: str = ""
     HF_TOKEN: str = ""
     HF_API_URL: str = "huhuhu"
+    GEMINI_API_KEY: str = ""
     TEST_API_BASE_URL: str = "http://localhost:8000/api/v1"
 
     class Config:
