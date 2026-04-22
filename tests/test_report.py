@@ -38,8 +38,8 @@ async def test_scam_report():
         # Dữ liệu mẫu mạo danh cục thuế (Context này cực kỳ giống thực tế)
         report_data = {
             "phone": "+84944555666",
-            "content": "Đối tượng mạo danh cán bộ thuế gọi điện hù dọa và gửi link lạ.",
-            "scam_type": "impersonation", # Mạo danh
+            "type": "IMPERSONATION",
+            "description": "Đối tượng mạo danh cán bộ thuế gọi điện hù dọa và gửi link lạ.",
             "messages": [
                 {"sender": "Kẻ lừa đảo", "content": "Chào anh, tôi là cán bộ chi cục thuế. Anh có khoản nợ thuế thu nhập cá nhân chưa quyết toán."},
                 {"sender": "Bạn", "content": "Tôi đã nộp hết rồi mà?"},
@@ -57,15 +57,17 @@ async def test_scam_report():
         if report_res.status_code == 200:
             print("✅ Gửi REPORT thành công!")
             data = report_res.json()
-            print("\n--- PHẢN HỒI TỪ SERVER (AI PHÂN TÍCH) ---")
-            print(f"ID Report: {data.get('id')}")
-            print(f"Loại hình (AI nhãn): {data.get('scam_type')}")
-            print(f"Mức độ rủi ro: {data.get('risk_level')}")
+            print("\n--- PHẢN HỒI TỪ SERVER (ScamReportResponse) ---")
+            print(f"  success:            {data.get('success')}")
+            print(f"  message:            {data.get('message')}")
+            print(f"  report_id:          {data.get('report_id')}")
+            print(f"  action_taken:       {data.get('action_taken')}")
+            print(f"  updated_risk_level: {data.get('updated_risk_level')}")
             
             # Kiểm tra xem dữ liệu có thực sự vào DB chưa bằng cách Check lại số này
             print("\n🔍 Bước 3: Kiểm tra lại số điện thoại vừa báo cáo...")
             check_res = await client.post(
-                f"{base_url}/scam/check",
+                f"{base_url}/scam/check-phones",
                 json={"phones": ["+84944555666"]},
                 headers=headers
             )
@@ -73,8 +75,13 @@ async def test_scam_report():
             if check_res.status_code == 200:
                 results = check_res.json().get("results", [])
                 for r in results:
-                    if r.get('isScam'):
-                        print(f"✅ XÁC NHẬN: Số {r.get('phone')} đã nằm trong danh sách ĐEN của Database.")
+                    t = r.get('type')
+                    if t in ['scam', 'spam']:
+                        print(f"✅ XÁC NHẬN: Số {r.get('phone')} đã nằm trong danh sách ĐEN của Database (type={t}).")
+                    elif t == 'unknown':
+                        print(f"⚠️  Số {r.get('phone')} vẫn chưa có trong blacklist (AI đánh giá rủi ro thấp).")
+                    else:
+                        print(f"ℹ️  Số {r.get('phone')} -> type={t}")
         else:
             print(f"❌ Gửi báo cáo thất bại: {report_res.status_code} - {report_res.text}")
 

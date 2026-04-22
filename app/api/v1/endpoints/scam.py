@@ -168,7 +168,7 @@ def check_conversations(
             
     return {"results": results}
 
-@router.post("/report", response_model=scam_schema.ScamCheckResult)
+@router.post("/report", response_model=scam_schema.ScamReportResponse)
 def report_scam(
     report_in: scam_schema.ScamReportCreate,
     db: Session = Depends(get_db),
@@ -177,7 +177,6 @@ def report_scam(
     norm_phone = normalize_phone(report_in.phone)
     
     # 1. Look up in both DB tables first
-    db_user = db.query(User).filter(User.phone == norm_phone).first()
     scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
     
     if scam_num:
@@ -193,21 +192,17 @@ def report_scam(
         )
         db.add(report_log)
         db.commit()
+        db.refresh(report_log)
         
-        t = "scam" if scam_num.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
         return {
-            "phone": report_in.phone,
-            "type": t,
-            "scam_info": {
-                "scam_type": scam_num.scam_type,
-                "risk_level": scam_num.risk_level,
-                "reports": scam_num.reportCount,
-                "ai_confidence": 0.0
-            },
-            "user_info": None
+            "success": True,
+            "message": "Cảm ơn bạn đã báo cáo. Số điện thoại này đã nằm trong danh sách đen, chúng tôi đã ghi nhận thêm.",
+            "report_id": str(report_log.id),
+            "action_taken": "REPORT_COUNT_INCREMENTED",
+            "updated_risk_level": scam_num.risk_level
         }
         
-    # 2. Nếu chưa có trong danh sách đen -> Dùng AI AI check phone hoặc tin nhắn
+    # 2. Nếu chưa có trong danh sách đen -> Dùng AI check phone hoặc tin nhắn
     ai_result = ai_service.analyze_scam_report(
         description=report_in.description or "",
         messages=report_in.messages or [],
@@ -236,7 +231,6 @@ def report_scam(
         scam_type = raw_type if raw_type in scam_enum_vals else "OTHER"
             
         risk_level = str(ai_result.get("risk_level", "MEDIUM") if ai_result else "MEDIUM").upper()
-        confidence = ai_result.get("confidence", 0.0) if ai_result else 0.0
 
         new_scam_num = ScamNumber(
             phone=norm_phone, 
@@ -248,42 +242,26 @@ def report_scam(
         )
         db.add(new_scam_num)
         db.commit()
+        db.refresh(report_log)
         
-        t = "scam" if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
         return {
-            "phone": report_in.phone,
-            "type": t,
-            "scam_info": {
-                "scam_type": scam_type,
-                "risk_level": risk_level,
-                "reports": 1,
-                "ai_confidence": confidence
-            },
-            "user_info": None
+            "success": True,
+            "message": "Báo cáo thành công. Hệ thống AI xác nhận đây là số có rủi ro lừa đảo/làm phiền và đã thêm vào danh sách đen.",
+            "report_id": str(report_log.id),
+            "action_taken": "AI_EVALUATED_AND_ADDED",
+            "updated_risk_level": risk_level
         }
     else:
         # Không làm gì nữa (Không ghi vào bảng ScamNumber blacklist)
         db.commit()
-        
-        if db_user:
-            return {
-                "phone": report_in.phone,
-                "type": "normal",
-                "scam_info": None,
-                "user_info": {
-                    "fullName": db_user.fullName,
-                    "email": db_user.email,
-                    "birthday": db_user.birthday,
-                    "gender": db_user.gender,
-                    "is_verified": db_user.is_verified
-                }
-            }
+        db.refresh(report_log)
         
         return {
-            "phone": report_in.phone,
-            "type": "unknown",
-            "scam_info": None,
-            "user_info": None
+            "success": True,
+            "message": "Đã ghi nhận báo cáo. Hệ thống AI đánh giá rủi ro thấp, số này sẽ được đưa vào diện theo dõi thêm.",
+            "report_id": str(report_log.id),
+            "action_taken": "LOGGED_ONLY",
+            "updated_risk_level": None
         }
 
 @router.get("/{phone}", response_model=scam_schema.ScamCheckResult)

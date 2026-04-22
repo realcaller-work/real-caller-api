@@ -45,3 +45,10 @@ class ScamReportCreate(BaseModel):
     description: Optional[str] = None
     evidence_urls: Optional[List[str]] = []
     messages: Optional[List[dict]] = []
+
+class ScamReportResponse(BaseModel):
+    success: bool
+    message: str
+    report_id: str
+    action_taken: str
+    updated_risk_level: Optional[RiskLevel] = None

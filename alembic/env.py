@@ -30,7 +30,7 @@ from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport
 
 # Overwrite sqlalchemy.url in config
-config.set_main_option("sqlalchemy.url", settings.SQLALCHEMY_DATABASE_URI)
+config.set_main_option("sqlalchemy.url", settings.SQLALCHEMY_DATABASE_URI.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

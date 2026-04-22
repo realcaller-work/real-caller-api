@@ -3,12 +3,15 @@ import json
 from google import genai
 from sqlalchemy.orm import Session
 from app.core.config import settings
-from app.api.v1.endpoints.scam import get_scam_detail
 from app.models.user import User
 from app.models.scam_number import ScamNumber, RiskLevel
-from app.schemas.scam import ScamCheckResult
+from app.models.scam_report import ScamReport
+from app.models.chat_history import ChatHistory
 from app.schemas.chatbot import ChatResponse
 from app.services.utils import normalize_phone
+
+MAX_HISTORY = 10
+
 
 class ChatbotService:
     def __init__(self):
@@ -20,185 +23,220 @@ class ChatbotService:
         else:
             print("❌ GEMINI_API_KEY missing. Chatbot will use basic Regex.")
 
+    # ─── History ────────────────────────────────────────────────────────
+
+    def _load_history(self, db: Session, user_id) -> list[dict]:
+        rows = (
+            db.query(ChatHistory)
+            .filter(ChatHistory.user_id == user_id)
+            .order_by(ChatHistory.created_at.desc())
+            .limit(MAX_HISTORY)
+            .all()
+        )
+        rows.reverse()
+        return [{"role": r.role, "content": r.content} for r in rows]
+
+    def _save_message(self, db: Session, user_id, role: str, content: str):
+        db.add(ChatHistory(user_id=user_id, role=role, content=content))
+
+    # ─── Phone regex ────────────────────────────────────────────────────
+
     def _extract_phone_regex(self, text: str):
-        # Basic Regex
         pattern = r'(?:\+84|0)[235789]\d{8}'
         matches = re.findall(pattern, text.replace(' ', '').replace('-', ''))
         return matches[0] if matches else None
 
-    def _generate_intent(self, user_msg: str, history: list) -> dict:
-        """
-        Ask Gemini to extract intent and phone number using history context.
-        """
-        if not self.is_ready:
-           phone = self._extract_phone_regex(user_msg)
-           if phone:
-               return {"phone": phone}
-           return {"reply": "Bạn vui lòng cung cấp số điện thoại để mình kiểm tra nhé!"}
+    # ─── Lookup phone in DB ─────────────────────────────────────────────
 
-        hist_str = ""
-        if history:
-            for h in history[-5:]: # Chỉ lấy 5 tin nhắn gần nhất để đỡ loạn
-                role_name = "Người dùng" if h.role == "user" else "Chatbot"
-                hist_str += f"{role_name}: {h.content}\n"
+    def _lookup_phone(self, phone: str, db: Session) -> str:
+        """Return a plain-text summary about this phone number."""
+        norm = normalize_phone(phone)
+        scam = db.query(ScamNumber).filter(ScamNumber.phone == norm).first()
+        user = db.query(User).filter(User.phone == norm).first()
 
-        prompt = f"""
-        Bạn là hệ thống kiểm tra lừa đảo Real Caller. Người dùng đang chat với bạn.
-        Nhiệm vụ: 
-        1. Đọc tin nhắn hiện tại và lịch sử chat để xác định người dùng đang ám chỉ đến SỐ ĐIỆN THOẠI VIỆT NAM nào.
-        2. Nếu tìm ra được SĐT mục tiêu, CHỈ trả về đúng chuỗi JSON: {{"phone": "số_điện_thoại_đó"}}
-        3. Nếu không xác định được SĐT nào để kiểm tra, hãy trả lời tự nhiên theo ngữ cảnh, kiểu JSON: {{"reply": "câu_trả_lời_của bạn"}}
-        
-        Lịch sử cuộc trò chuyện gần đây:
-        {hist_str}
-        
-        Tin nhắn hiện tại: "{user_msg}"
-        
-        Lưu ý: Chỉ trả ra đúng 1 JSON object. Không giải thích thêm.
-        """
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
+        if scam:
+            risk = str(scam.risk_level).replace("RiskLevel.", "")
+            stype = str(scam.scam_type).replace("ScamType.", "")
+            return (
+                f"Số {phone} nằm trong DANH SÁCH ĐEN.\n"
+                f"- Loại: {stype}\n"
+                f"- Mức rủi ro: {risk}\n"
+                f"- Số lượt báo cáo: {scam.reportCount}"
             )
-            text = response.text.strip()
-            
-            # Clean markdown codeblocks
+        if user:
+            name = user.fullName or "Không rõ tên"
+            verified = "Đã xác minh" if user.is_verified else "Chưa xác minh"
+            return f"Số {phone} thuộc về người dùng: {name} ({verified}). Không có báo cáo lừa đảo."
+
+        return f"Số {phone} chưa có thông tin trong hệ thống. Chưa bị báo cáo."
+
+    # ─── Report phone ───────────────────────────────────────────────────
+
+    def _report_phone(self, phone: str, description: str, scam_type: str,
+                      db: Session, current_user: User) -> str:
+        """Execute report and return a plain-text summary."""
+        norm = normalize_phone(phone)
+        scam = db.query(ScamNumber).filter(ScamNumber.phone == norm).first()
+
+        scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
+        stype = scam_type.upper() if scam_type.upper() in scam_enum_vals else "OTHER"
+
+        if scam:
+            scam.reportCount += 1
+            report_log = ScamReport(
+                phone=norm, deviceId=str(current_user.id),
+                reportType=stype, description=description,
+                evidence_urls=[], messages=[]
+            )
+            db.add(report_log)
+            db.commit()
+            return (
+                f"Đã ghi nhận thêm báo cáo cho số {phone}.\n"
+                f"Tổng số lượt báo cáo hiện tại: {scam.reportCount}."
+            )
+
+        # Chưa có -> tạo mới
+        from app.services.ai import ai_service
+        ai_result = ai_service.analyze_scam_report(
+            description=description, messages=[], evidence_urls=[]
+        )
+
+        report_log = ScamReport(
+            phone=norm, deviceId=str(current_user.id),
+            reportType=stype, description=description,
+            evidence_urls=[], messages=[]
+        )
+        db.add(report_log)
+
+        is_scam = ai_result.get("is_scam", True) if ai_result else True
+        if is_scam:
+            risk = str(ai_result.get("risk_level", "MEDIUM") if ai_result else "MEDIUM").upper()
+            ai_type = str(ai_result.get("scam_type", stype)).upper() if ai_result else stype
+            final_type = ai_type if ai_type in scam_enum_vals else "OTHER"
+
+            db.add(ScamNumber(
+                phone=norm, scam_type=final_type, risk_level=risk,
+                reportCount=1, is_ai_vetted=True, metadata_info=ai_result
+            ))
+            db.commit()
+            return (
+                f"Báo cáo thành công! AI xác nhận số {phone} có rủi ro.\n"
+                f"Đã thêm vào danh sách đen (Mức rủi ro: {risk})."
+            )
+        else:
+            db.commit()
+            return (
+                f"Đã ghi nhận báo cáo cho số {phone}.\n"
+                f"AI đánh giá rủi ro thấp, số này sẽ được theo dõi thêm."
+            )
+
+    # ─── Main ───────────────────────────────────────────────────────────
+
+    def process_message(self, message: str, db: Session, current_user: User) -> ChatResponse:
+        history = self._load_history(db, current_user.id)
+        self._save_message(db, current_user.id, "user", message)
+
+        # ── Nếu không có Gemini -> fallback regex ──
+        if not self.is_ready:
+            phone = self._extract_phone_regex(message)
+            if phone:
+                result = self._lookup_phone(phone, db)
+                reply = result
+            else:
+                reply = "Bạn vui lòng cung cấp số điện thoại để mình kiểm tra nhé!"
+            self._save_message(db, current_user.id, "chatbot", reply)
+            db.commit()
+            return ChatResponse(reply=reply)
+
+        # ── Gemini: phân tích intent + tra cứu + tổng hợp ──
+        hist_str = ""
+        for h in (history or [])[-5:]:
+            role_name = "Người dùng" if h["role"] == "user" else "Chatbot"
+            hist_str += f"{role_name}: {h['content']}\n"
+
+        # Bước 1: Bóc tách intent
+        intent_prompt = f"""
+Bạn là hệ thống kiểm tra lừa đảo Real Caller.
+
+Nhiệm vụ:
+1. Đọc tin nhắn và lịch sử để xác định ý định người dùng.
+2. Trả về đúng 1 JSON:
+   - Kiểm tra: {{"intent":"CHECK","phone":"số"}}
+   - Báo cáo: {{"intent":"REPORT","phone":"số","scam_type":"INVESTMENT|LOAN|RECRUITMENT|IMPERSONATION|OTHER","description":"mô tả"}}
+   - Khác: {{"intent":"CHAT","reply":"câu trả lời"}}
+
+Lịch sử:
+{hist_str}
+
+Tin nhắn: "{message}"
+
+Chỉ trả JSON. Không giải thích.
+"""
+        try:
+            resp = self.client.models.generate_content(
+                model=self.model_name, contents=intent_prompt
+            )
+            text = resp.text.strip()
             text = re.sub(r'^```[a-zA-Z]*\n', '', text)
             text = re.sub(r'```$', '', text).strip()
-            
-            # Find json boundaries
-            start = text.find('{')
-            end = text.rfind('}')
+            start, end = text.find('{'), text.rfind('}')
             if start != -1 and end != -1:
-                 text = text[start:end+1]
-                 
-            return json.loads(text)
+                text = text[start:end + 1]
+            intent_data = json.loads(text)
         except Exception as e:
             print("Gemini Intent Error:", e)
-            phone = self._extract_phone_regex(user_msg)
+            phone = self._extract_phone_regex(message)
             if phone:
-                return {"phone": phone}
-            return {"reply": "Lỗi AI phần đọc ý định. Vui lòng gõ lại đầy đủ số điện thoại nhé."}
+                intent_data = {"intent": "CHECK", "phone": phone}
+            else:
+                intent_data = {"intent": "CHAT", "reply": "Xin lỗi, mình chưa hiểu. Bạn gõ số điện thoại cần kiểm tra nhé!"}
 
-    def _generate_human_reply(self, scam_result: dict, original_msg: str, history: list) -> str:
-        if not self.is_ready:
-            t = scam_result.get('type')
-            if t in ['scam', 'spam']:
-                return "Cẩn thận! Số điện thoại này nằm trong danh sách rủi ro."
-            elif t == 'normal':
-                return "Số điện thoại này thuộc về người dùng an toàn."
-            return "Số này chưa có thông tin trong hệ thống."
-
-        hist_str = ""
-        if history:
-            for h in history[-3:]: # Lấy 3 câu gần nhất
-                role_name = "Người dùng" if h.role == "user" else "Chatbot"
-                hist_str += f"{role_name}: {h.content}\n"
-
-        prompt = f"""
-        Bạn là trợ lý kiểm tra lừa đảo của app Real Caller. AI lõi vừa phân tích số điện thoại quy chiếu và ra kết quả sau:
-        {json.dumps(scam_result, ensure_ascii=False)}
-        
-        Lịch sử cuộc trò chuyện (để tham khảo lại ngữ cảnh):
-        {hist_str}
-        
-        Câu hỏi hiện tại của người dùng là: "{original_msg}"
-        
-        Dựa vào kết quả kiểm tra (type: scam là lừa đảo, spam là làm phiền, normal là người dùng bình thường, unknown là số lạ chưa có thông tin), 
-        hãy viết 1 câu trả lời ngắn gọn, nối tiếp tự nhiên với cuộc nói chuyện để thông báo cho người dùng biết kết quả.
-        Tập trung nhắc nhở cảnh cáo nếu là scam/spam (có báo cáo hoặc risk_level cao).
-        """
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text.strip()
-        except:
-            return "Đã kiểm tra xong. Bạn xem dữ liệu chi tiết bên dưới nhé!"
-
-    def process_message(self, message: str, history: list, db: Session) -> ChatResponse:
-        # Lớp 1: Bóc tách/Intent với History
-        intent_data = self._generate_intent(message, history)
+        intent = intent_data.get("intent", "CHAT").upper()
         phone = intent_data.get("phone")
-        
-        # Không có số điện thoại
-        if not phone:
-            return ChatResponse(
-                reply=intent_data.get("reply", "Bạn cần cung cấp số điện thoại muốn kiểm tra."),
-                detected_phone=None,
-                scam_info=None
+
+        # ── CHAT (không có phone) ──
+        if intent == "CHAT" or not phone:
+            reply = intent_data.get("reply", "Bạn cần cung cấp số điện thoại muốn kiểm tra hoặc báo cáo.")
+            self._save_message(db, current_user.id, "chatbot", reply)
+            db.commit()
+            return ChatResponse(reply=reply)
+
+        # ── CHECK hoặc REPORT -> lấy dữ liệu thực ──
+        if intent == "REPORT":
+            data_summary = self._report_phone(
+                phone,
+                intent_data.get("description", message),
+                intent_data.get("scam_type", "OTHER"),
+                db, current_user
             )
-            
-        # Lớp 2: Có số điện thoại -> Dò Core DB
-        norm_phone = normalize_phone(phone)
-        scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
-        db_user = db.query(User).filter(User.phone == norm_phone).first()
-        
-        scam_result = {
-            "phone": phone,
-            "type": "unknown",
-            "scam_info": None,
-            "user_info": None
-        }
-        
-        if scam_num:
-            t = "scam" if scam_num.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
-            scam_result["type"] = t
-            scam_result["scam_info"] = {
-                "scam_type": scam_num.scam_type,
-                "risk_level": scam_num.risk_level,
-                "reports": scam_num.reportCount,
-                "ai_confidence": 0.0
-            }
-        elif db_user:
-            scam_result["type"] = "normal"
-            scam_result["user_info"] = {
-                "fullName": db_user.fullName,
-                "email": db_user.email,
-                "birthday": db_user.birthday,
-                "gender": db_user.gender,
-                "is_verified": db_user.is_verified
-            }
         else:
-            # Lớp 2.5: Phân tích bằng mô hình AI nếu không có trong DB
-            from app.services.ai import ai_service
-            
-            ai_result = ai_service.analyze_scam_report(
-                description=message, # Gửi toàn bộ câu nói của ng dùng sang model
-                messages=[],
-                evidence_urls=[]
+            data_summary = self._lookup_phone(phone, db)
+
+        # Bước 2: Gemini tổng hợp thành reply tự nhiên
+        reply_prompt = f"""
+Bạn là trợ lý Real Caller. Dựa vào dữ liệu bên dưới, viết 1 câu trả lời ngắn gọn, thân thiện cho người dùng.
+
+Dữ liệu:
+{data_summary}
+
+Lịch sử chat:
+{hist_str}
+
+Câu hỏi: "{message}"
+
+Yêu cầu: Trả lời tự nhiên bằng tiếng Việt, 2-4 câu. Cảnh báo rõ nếu nguy hiểm. Không lặp lại toàn bộ dữ liệu thô.
+"""
+        try:
+            resp = self.client.models.generate_content(
+                model=self.model_name, contents=reply_prompt
             )
-            
-            is_scam = ai_result.get("is_scam", False) if ai_result else False
-            if is_scam:
-                scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
-                raw_type = str(ai_result.get("scam_type", "OTHER")).upper()
-                scam_type = raw_type if raw_type in scam_enum_vals else "OTHER"
-                    
-                risk_level = str(ai_result.get("risk_level", "MEDIUM")).upper()
-                confidence = ai_result.get("confidence", 0.0)
-                
-                t = "scam" if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
-                scam_result["type"] = t
-                scam_result["scam_info"] = {
-                    "scam_type": scam_type,
-                    "risk_level": risk_level,
-                    "reports": 0, # Số 0 ám chỉ chưa có report, đây là do AI tự phân tích
-                    "ai_confidence": confidence
-                }
-            
-        # Lớp 3: Generate human response (cũng có history để nói nối tiếp)
-        final_reply = self._generate_human_reply(scam_result, message, history)
-        
-        # Cấu trúc ScamCheckResult xài chung cho app Pydantic
-        scam_res_obj = ScamCheckResult(**scam_result)
-        
-        return ChatResponse(
-            reply=final_reply,
-            detected_phone=norm_phone,
-            scam_info=scam_res_obj
-        )
+            reply = resp.text.strip()
+        except:
+            reply = data_summary  # Fallback: dùng dữ liệu thô
+
+        self._save_message(db, current_user.id, "chatbot", reply)
+        db.commit()
+        return ChatResponse(reply=reply)
+
 
 chatbot_service = ChatbotService()

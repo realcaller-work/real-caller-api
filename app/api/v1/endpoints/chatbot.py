@@ -15,7 +15,8 @@ def handle_chat_message(
     current_user: User = Depends(get_current_user)
 ):
     """
-    API for AI Hybrid Chatbot: NLP Intent -> Extract Phone -> Core DB Model -> NLP Response
+    AI Hybrid Chatbot: NLP Intent (CHECK/REPORT) -> Extract Phone -> Core DB/AI -> NLP Response.
+    History is loaded from DB automatically per user.
     """
-    response = chatbot_service.process_message(request.message, request.history, db)
+    response = chatbot_service.process_message(request.message, db, current_user)
     return response
