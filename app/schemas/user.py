@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import date
+from uuid import UUID
 from app.models.user import GenderType
 
 class UserProfileUpdate(BaseModel):
@@ -10,7 +11,7 @@ class UserProfileUpdate(BaseModel):
     gender: Optional[GenderType] = None
 
 class UserProfileResponse(BaseModel):
-    id: str
+    id: UUID
     phone: str
     fullName: Optional[str] = None
     email: Optional[str] = None
