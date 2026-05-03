@@ -155,3 +155,4 @@ cython_debug/
 phobert_scam_model/
 data_scam_repo/
 results/
+firebase-adminsdk.json
