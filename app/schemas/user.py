@@ -6,6 +6,7 @@ from app.models.user import GenderType
 
 class UserProfileUpdate(BaseModel):
     fullName: Optional[str] = None
+    avatar: Optional[str] = None
     email: Optional[EmailStr] = None
     birthday: Optional[date] = None
     gender: Optional[GenderType] = None
@@ -14,6 +15,7 @@ class UserProfileResponse(BaseModel):
     id: UUID
     phone: str
     fullName: Optional[str] = None
+    avatar: Optional[str] = None
     email: Optional[str] = None
     birthday: Optional[date] = None
     gender: Optional[GenderType] = None

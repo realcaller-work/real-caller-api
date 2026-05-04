@@ -18,6 +18,7 @@ class User(Base):
     phone = Column(String, unique=True, index=True, nullable=False)
     
     fullName = Column(String, nullable=True)
+    avatar = Column(String, nullable=True)
     email = Column(String, nullable=True)
     birthday = Column(Date, nullable=True)
     gender = Column(SQLEnum(GenderType, name="gender_type"), nullable=True)

@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.config import settings
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_device
 from app.models.user import User
+from app.models.device import Device
 from app.models.scam_number import ScamNumber, RiskLevel
 from app.models.scam_report import ScamReport
 from app.schemas import scam as scam_schema
@@ -172,7 +173,8 @@ def check_conversations(
 def report_scam(
     report_in: scam_schema.ScamReportCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    current_device: Device = Depends(get_current_device)
 ):
     norm_phone = normalize_phone(report_in.phone)
     
@@ -184,7 +186,7 @@ def report_scam(
         scam_num.reportCount += 1
         report_log = ScamReport(
             phone=norm_phone,
-            deviceId=str(current_user.id),
+            deviceId=current_device.deviceId,
             reportType=report_in.type,
             description=report_in.description,
             evidence_urls=report_in.evidence_urls,
@@ -209,10 +211,10 @@ def report_scam(
         evidence_urls=report_in.evidence_urls or []
     )
     
-    # Lưu report log chung để Admin theo dõi (tuỳ chọn, nhưng nên có)
+    # Lưu report log chung để Admin theo dõi
     report_log = ScamReport(
         phone=norm_phone,
-        deviceId=str(current_user.id),
+        deviceId=current_device.deviceId,
         reportType=report_in.type,
         description=report_in.description,
         evidence_urls=report_in.evidence_urls,
