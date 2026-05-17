@@ -1,12 +1,33 @@
 from pydantic import BaseModel
-from typing import Optional
+
 
 class LoginRequest(BaseModel):
     idToken: str
     deviceId: str
-    platform: Optional[str] = "other"
 
-class LoginResponse(BaseModel):
+
+class TokenPair(BaseModel):
     accessToken: str
+    refreshToken: str
     tokenType: str = "bearer"
+    accessTokenExpiresIn: int  # seconds
+
+
+class LoginResponse(TokenPair):
     needsProfileUpdate: bool
+
+
+class RefreshRequest(BaseModel):
+    refreshToken: str
+
+
+class RefreshResponse(TokenPair):
+    pass
+
+
+class LogoutRequest(BaseModel):
+    refreshToken: str
+
+
+class LogoutResponse(BaseModel):
+    success: bool

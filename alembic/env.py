@@ -28,6 +28,7 @@ from app.models.user import User
 from app.models.device import Device
 from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport
+from app.models.refresh_token import RefreshToken
 
 # Overwrite sqlalchemy.url in config
 config.set_main_option("sqlalchemy.url", settings.SQLALCHEMY_DATABASE_URI.replace("%", "%%"))

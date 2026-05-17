@@ -1,242 +1,317 @@
-import re
+"""Conversational chatbot service — 4-layer pipeline.
+
+Layer 1 — Preprocess: extract entities (phones, URLs) + run PhoBERT baseline on the message text.
+Layer 2 — Context retrieval: prefetch DB info for each extracted phone (RAG-style grounding).
+Layer 3 — Gemini agent: tool-calling loop. Gemini decides whether to chat freely or call tools.
+Layer 4 — Verdict fusion + final synthesis: aggregate DB + PhoBERT + Gemini signals for each phone
+          that surfaced in conversation, attach to response alongside the natural-language reply.
+
+Falls back to a regex + DB lookup if GEMINI_API_KEY is missing — so the chatbot remains
+functional offline (degraded UX, but tests can run without external services).
+"""
+from __future__ import annotations
+
 import json
-from google import genai
+import re
+from typing import Any
+
 from sqlalchemy.orm import Session
+
 from app.core.config import settings
-from app.models.user import User
-from app.models.scam_number import ScamNumber, RiskLevel
-from app.models.scam_report import ScamReport
 from app.models.chat_history import ChatHistory
-from app.schemas.chatbot import ChatResponse
+from app.models.user import User
+from app.schemas.chatbot import ChatResponse, PhoneVerdict
+from app.services import chatbot_tools
+from app.services.chatbot_fusion import fuse_verdict
 from app.services.utils import normalize_phone
 
-MAX_HISTORY = 10
+MAX_HISTORY = 30
+MAX_TOOL_ITERATIONS = 6  # safety cap on Gemini ↔ tool round-trips
+
+
+SYSTEM_INSTRUCTION = """Bạn là Real Caller — trợ lý AI thân thiện, giúp người Việt vừa trò chuyện
+hàng ngày vừa phòng tránh lừa đảo qua điện thoại.
+
+QUY TẮC BẮT BUỘC:
+1. Khi người dùng nhắc đến MỘT SỐ ĐIỆN THOẠI cụ thể → LUÔN gọi tool `lookup_phone` để
+   tra cứu trước khi trả lời. Không bao giờ tự suy đoán xem số đó có an toàn không.
+2. Khi người dùng dán/forward một đoạn tin nhắn dài đáng ngờ → gọi `analyze_text_for_scam`
+   để PhoBERT đánh giá.
+3. Khi người dùng XÁC NHẬN muốn báo cáo một số → gọi `submit_report` (phải xác nhận lại
+   số + lý do trước, không tự ý gọi).
+4. Khi câu hỏi là tán gẫu/thông thường (không có phone hay text đáng ngờ) → trả lời tự nhiên
+   không gọi tool nào.
+
+PHONG CÁCH:
+- Tiếng Việt, ngắn gọn 2-4 câu, thân thiện như bạn bè.
+- Khi cảnh báo scam: rõ ràng, nêu lý do (loại scam, mức rủi ro, số báo cáo) — không doạ quá.
+- Khi số an toàn / không có dữ liệu: nói rõ giới hạn ("chưa có thông tin" ≠ "an toàn 100%").
+- Nếu bị hỏi ngoài lề (chính trị, y tế, pháp lý chi tiết) → lịch sự khéo léo chuyển hướng
+  về chủ đề an toàn điện thoại.
+"""
 
 
 class ChatbotService:
     def __init__(self):
+        self.model_name = "gemini-2.5-pro"
+        self.client = None
         self.is_ready = bool(settings.GEMINI_API_KEY)
         if self.is_ready:
+            from google import genai
             self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            self.model_name = 'gemini-2.5-flash'
-            print("✅ Gemini API configured for Chatbot (google-genai)")
+            print(f"Gemini configured (model={self.model_name})")
         else:
-            print("❌ GEMINI_API_KEY missing. Chatbot will use basic Regex.")
+            print("GEMINI_API_KEY missing - chatbot falls back to regex + DB lookup only.")
 
-    # ─── History ────────────────────────────────────────────────────────
+    # ── History persistence ────────────────────────────────────────────────
 
-    def _load_history(self, db: Session, user_id) -> list[dict]:
+    def _load_history(self, db: Session, user_id) -> list[dict[str, str]]:
         rows = (
             db.query(ChatHistory)
-            .filter(ChatHistory.user_id == user_id)
-            .order_by(ChatHistory.created_at.desc())
-            .limit(MAX_HISTORY)
-            .all()
+              .filter(ChatHistory.user_id == user_id)
+              .order_by(ChatHistory.created_at.desc())
+              .limit(MAX_HISTORY)
+              .all()
         )
         rows.reverse()
         return [{"role": r.role, "content": r.content} for r in rows]
 
-    def _save_message(self, db: Session, user_id, role: str, content: str):
+    def _save(self, db: Session, user_id, role: str, content: str) -> None:
         db.add(ChatHistory(user_id=user_id, role=role, content=content))
 
-    # ─── Phone regex ────────────────────────────────────────────────────
+    # ── Layer 1 — preprocess ──────────────────────────────────────────────
 
-    def _extract_phone_regex(self, text: str):
-        pattern = r'(?:\+84|0)[235789]\d{8}'
-        matches = re.findall(pattern, text.replace(' ', '').replace('-', ''))
-        return matches[0] if matches else None
+    _PHONE_REGEX = re.compile(r"(?:\+84|0)[235789]\d{8}")
 
-    # ─── Lookup phone in DB ─────────────────────────────────────────────
+    def _extract_phones(self, text: str) -> list[str]:
+        if not text:
+            return []
+        compact = text.replace(" ", "").replace("-", "")
+        return list(dict.fromkeys(self._PHONE_REGEX.findall(compact)))
 
-    def _lookup_phone(self, phone: str, db: Session) -> str:
-        """Return a plain-text summary about this phone number."""
-        norm = normalize_phone(phone)
-        scam = db.query(ScamNumber).filter(ScamNumber.phone == norm).first()
-        user = db.query(User).filter(User.phone == norm).first()
+    def _preprocess(self, message: str) -> dict[str, Any]:
+        phones = self._extract_phones(message)
+        # Baseline scam analysis on the whole message, regardless of intent.
+        baseline = chatbot_tools.analyze_text_for_scam_impl(message)
+        return {"phones": phones, "baseline_phobert": baseline}
 
-        if scam:
-            risk = str(scam.risk_level).replace("RiskLevel.", "")
-            stype = str(scam.scam_type).replace("ScamType.", "")
-            return (
-                f"Số {phone} nằm trong DANH SÁCH ĐEN.\n"
-                f"- Loại: {stype}\n"
-                f"- Mức rủi ro: {risk}\n"
-                f"- Số lượt báo cáo: {scam.reportCount}"
-            )
-        if user:
-            name = user.fullName or "Không rõ tên"
-            verified = "Đã xác minh" if user.is_verified else "Chưa xác minh"
-            return f"Số {phone} thuộc về người dùng: {name} ({verified}). Không có báo cáo lừa đảo."
+    # ── Layer 2 — context retrieval ───────────────────────────────────────
 
-        return f"Số {phone} chưa có thông tin trong hệ thống. Chưa bị báo cáo."
+    def _gather_context(self, phones: list[str], db: Session) -> dict[str, Any]:
+        phone_info = {p: chatbot_tools.lookup_phone_impl(p, db=db) for p in phones}
+        return {"phone_info": phone_info}
 
-    # ─── Report phone ───────────────────────────────────────────────────
+    # ── Fallback (no Gemini) ──────────────────────────────────────────────
 
-    def _report_phone(self, phone: str, description: str, scam_type: str,
-                      db: Session, current_user: User) -> str:
-        """Execute report and return a plain-text summary."""
-        norm = normalize_phone(phone)
-        scam = db.query(ScamNumber).filter(ScamNumber.phone == norm).first()
+    def _fallback_reply(
+        self,
+        message: str,
+        preprocess: dict[str, Any],
+        context: dict[str, Any],
+    ) -> str:
+        phones = preprocess["phones"]
+        if not phones:
+            return "Bạn cung cấp số điện thoại để mình kiểm tra giúp nhé!"
 
-        scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
-        stype = scam_type.upper() if scam_type.upper() in scam_enum_vals else "OTHER"
+        lines = []
+        for p in phones:
+            info = context["phone_info"].get(p, {})
+            if info.get("in_blacklist"):
+                lines.append(
+                    f"⚠️ Số {p} ĐÃ trong danh sách đen (loại {info.get('scam_type')}, "
+                    f"rủi ro {info.get('risk_level')}, {info.get('report_count')} báo cáo). Cẩn thận nhé!"
+                )
+            elif info.get("is_known_user"):
+                lines.append(
+                    f"Số {p} thuộc về người dùng Real Caller đã đăng ký. Chưa có báo cáo lừa đảo."
+                )
+            else:
+                lines.append(f"Số {p} chưa có thông tin trong hệ thống. Hãy thận trọng.")
+        return "\n".join(lines)
 
-        if scam:
-            scam.reportCount += 1
-            report_log = ScamReport(
-                phone=norm, deviceId=str(current_user.id),
-                reportType=stype, description=description,
-                evidence_urls=[], messages=[]
-            )
-            db.add(report_log)
-            db.commit()
-            return (
-                f"Đã ghi nhận thêm báo cáo cho số {phone}.\n"
-                f"Tổng số lượt báo cáo hiện tại: {scam.reportCount}."
-            )
+    # ── Layer 3 — Gemini tool-calling loop ────────────────────────────────
 
-        # Chưa có -> tạo mới
-        from app.services.ai import ai_service
-        ai_result = ai_service.analyze_scam_report(
-            description=description, messages=[], evidence_urls=[]
+    def _tool_dispatch(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        db: Session,
+        current_user: User,
+    ) -> dict[str, Any]:
+        try:
+            if name == "lookup_phone":
+                return chatbot_tools.lookup_phone_impl(args["phone"], db=db)
+            if name == "analyze_text_for_scam":
+                return chatbot_tools.analyze_text_for_scam_impl(args.get("text", ""))
+            if name == "submit_report":
+                return chatbot_tools.submit_report_impl(
+                    phone=args["phone"],
+                    source=args.get("source", "USER_MANUAL"),
+                    description=args.get("description", ""),
+                    db=db,
+                    current_user=current_user,
+                )
+            return {"error": f"unknown tool {name}"}
+        except Exception as e:  # noqa: BLE001 — surface to Gemini so it can recover
+            return {"error": str(e)}
+
+    def _run_gemini_agent(
+        self,
+        *,
+        message: str,
+        history: list[dict[str, str]],
+        preprocess: dict[str, Any],
+        context: dict[str, Any],
+        db: Session,
+        current_user: User,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run the agent loop. Returns (final_reply, tool_call_log)."""
+        from google.genai import types as genai_types
+
+        # Build a "context block" of prefetched data so Gemini doesn't have to call
+        # tools redundantly when the answer is already obvious.
+        precomputed = {
+            "phones_detected_in_message": preprocess["phones"],
+            "phobert_baseline_on_message": preprocess["baseline_phobert"],
+            "phone_lookup_prefetch": context["phone_info"],
+        }
+        context_note = (
+            "DỮ LIỆU ĐÃ TRA SẴN cho tin nhắn này (bạn có thể dùng luôn, không cần gọi tool lại):\n"
+            f"{json.dumps(precomputed, ensure_ascii=False, indent=2)}"
         )
 
-        report_log = ScamReport(
-            phone=norm, deviceId=str(current_user.id),
-            reportType=stype, description=description,
-            evidence_urls=[], messages=[]
+        tools_decl = [
+            genai_types.Tool(function_declarations=chatbot_tools.TOOL_DECLARATIONS)
+        ]
+
+        config = genai_types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=tools_decl,
         )
-        db.add(report_log)
 
-        is_scam = ai_result.get("is_scam", True) if ai_result else True
-        if is_scam:
-            risk = str(ai_result.get("risk_level", "MEDIUM") if ai_result else "MEDIUM").upper()
-            ai_type = str(ai_result.get("scam_type", stype)).upper() if ai_result else stype
-            final_type = ai_type if ai_type in scam_enum_vals else "OTHER"
-
-            db.add(ScamNumber(
-                phone=norm, scam_type=final_type, risk_level=risk,
-                reportCount=1, is_ai_vetted=True, metadata_info=ai_result
-            ))
-            db.commit()
-            return (
-                f"Báo cáo thành công! AI xác nhận số {phone} có rủi ro.\n"
-                f"Đã thêm vào danh sách đen (Mức rủi ro: {risk})."
+        # Build contents: history → context_note → user message
+        contents = []
+        for h in history:
+            role = "user" if h["role"] == "user" else "model"
+            contents.append(
+                genai_types.Content(role=role, parts=[genai_types.Part.from_text(text=h["content"])])
             )
-        else:
-            db.commit()
-            return (
-                f"Đã ghi nhận báo cáo cho số {phone}.\n"
-                f"AI đánh giá rủi ro thấp, số này sẽ được theo dõi thêm."
+        contents.append(
+            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=context_note)])
+        )
+        contents.append(
+            genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=message)])
+        )
+
+        tool_log: list[dict[str, Any]] = []
+
+        for _ in range(MAX_TOOL_ITERATIONS):
+            resp = self.client.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=config,
             )
 
-    # ─── Main ───────────────────────────────────────────────────────────
+            parts = resp.candidates[0].content.parts if resp.candidates else []
+            function_calls = [p for p in parts if getattr(p, "function_call", None)]
+
+            if not function_calls:
+                # Final natural-language answer
+                text_parts = [getattr(p, "text", "") for p in parts if getattr(p, "text", None)]
+                return ("\n".join(text_parts).strip() or "Mình chưa rõ ý bạn, có thể hỏi lại không?", tool_log)
+
+            # Append the model's tool-request turn
+            contents.append(resp.candidates[0].content)
+
+            # Execute each requested function call
+            response_parts = []
+            for p in function_calls:
+                fc = p.function_call
+                args = dict(fc.args or {})
+                result = self._tool_dispatch(fc.name, args, db=db, current_user=current_user)
+                tool_log.append({"name": fc.name, "args": args, "result": result})
+                response_parts.append(
+                    genai_types.Part.from_function_response(
+                        name=fc.name, response={"result": result}
+                    )
+                )
+
+            contents.append(genai_types.Content(role="tool", parts=response_parts))
+
+        return ("Mình đang gặp chút trở ngại khi xử lý, bạn thử lại nhé.", tool_log)
+
+    # ── Layer 4 — fusion + response synthesis ─────────────────────────────
+
+    def _build_verdicts(
+        self,
+        preprocess: dict[str, Any],
+        context: dict[str, Any],
+        tool_log: list[dict[str, Any]],
+    ) -> list[PhoneVerdict]:
+        # Collect every phone we have evidence for: detected in message + any
+        # phone Gemini explicitly looked up via tool.
+        candidates: dict[str, dict[str, Any]] = {}
+        for p in preprocess["phones"]:
+            candidates[normalize_phone(p)] = context["phone_info"].get(p)
+        for call in tool_log:
+            if call["name"] == "lookup_phone":
+                info = call["result"]
+                if isinstance(info, dict) and info.get("phone_normalized"):
+                    candidates[info["phone_normalized"]] = info
+
+        if not candidates:
+            return []
+
+        # PhoBERT baseline applies to the whole message — only attach if it indicates scam.
+        phobert_baseline = preprocess["baseline_phobert"]
+        phobert_for_fusion = phobert_baseline if phobert_baseline.get("is_scam") else None
+
+        verdicts: list[PhoneVerdict] = []
+        for norm, info in candidates.items():
+            v = fuse_verdict(
+                phone=norm,
+                phone_info=info,
+                phobert=phobert_for_fusion,
+                gemini_likelihood=None,
+            )
+            verdicts.append(PhoneVerdict(**v))
+        return verdicts
+
+    # ── Entry point ────────────────────────────────────────────────────────
 
     def process_message(self, message: str, db: Session, current_user: User) -> ChatResponse:
         history = self._load_history(db, current_user.id)
-        self._save_message(db, current_user.id, "user", message)
+        self._save(db, current_user.id, "user", message)
 
-        # ── Nếu không có Gemini -> fallback regex ──
-        if not self.is_ready:
-            phone = self._extract_phone_regex(message)
-            if phone:
-                result = self._lookup_phone(phone, db)
-                reply = result
-            else:
-                reply = "Bạn vui lòng cung cấp số điện thoại để mình kiểm tra nhé!"
-            self._save_message(db, current_user.id, "chatbot", reply)
-            db.commit()
-            return ChatResponse(reply=reply)
+        # Layer 1 + 2 — always
+        preprocess = self._preprocess(message)
+        context = self._gather_context(preprocess["phones"], db)
 
-        # ── Gemini: phân tích intent + tra cứu + tổng hợp ──
-        hist_str = ""
-        for h in (history or [])[-5:]:
-            role_name = "Người dùng" if h["role"] == "user" else "Chatbot"
-            hist_str += f"{role_name}: {h['content']}\n"
+        tool_log: list[dict[str, Any]] = []
 
-        # Bước 1: Bóc tách intent
-        intent_prompt = f"""
-Bạn là hệ thống kiểm tra lừa đảo Real Caller.
-
-Nhiệm vụ:
-1. Đọc tin nhắn và lịch sử để xác định ý định người dùng.
-2. Trả về đúng 1 JSON:
-   - Kiểm tra: {{"intent":"CHECK","phone":"số"}}
-   - Báo cáo: {{"intent":"REPORT","phone":"số","scam_type":"INVESTMENT|LOAN|RECRUITMENT|IMPERSONATION|OTHER","description":"mô tả"}}
-   - Khác: {{"intent":"CHAT","reply":"câu trả lời"}}
-
-Lịch sử:
-{hist_str}
-
-Tin nhắn: "{message}"
-
-Chỉ trả JSON. Không giải thích.
-"""
-        try:
-            resp = self.client.models.generate_content(
-                model=self.model_name, contents=intent_prompt
-            )
-            text = resp.text.strip()
-            text = re.sub(r'^```[a-zA-Z]*\n', '', text)
-            text = re.sub(r'```$', '', text).strip()
-            start, end = text.find('{'), text.rfind('}')
-            if start != -1 and end != -1:
-                text = text[start:end + 1]
-            intent_data = json.loads(text)
-        except Exception as e:
-            print("Gemini Intent Error:", e)
-            phone = self._extract_phone_regex(message)
-            if phone:
-                intent_data = {"intent": "CHECK", "phone": phone}
-            else:
-                intent_data = {"intent": "CHAT", "reply": "Xin lỗi, mình chưa hiểu. Bạn gõ số điện thoại cần kiểm tra nhé!"}
-
-        intent = intent_data.get("intent", "CHAT").upper()
-        phone = intent_data.get("phone")
-
-        # ── CHAT (không có phone) ──
-        if intent == "CHAT" or not phone:
-            reply = intent_data.get("reply", "Bạn cần cung cấp số điện thoại muốn kiểm tra hoặc báo cáo.")
-            self._save_message(db, current_user.id, "chatbot", reply)
-            db.commit()
-            return ChatResponse(reply=reply)
-
-        # ── CHECK hoặc REPORT -> lấy dữ liệu thực ──
-        if intent == "REPORT":
-            data_summary = self._report_phone(
-                phone,
-                intent_data.get("description", message),
-                intent_data.get("scam_type", "OTHER"),
-                db, current_user
-            )
+        if self.is_ready:
+            try:
+                reply, tool_log = self._run_gemini_agent(
+                    message=message,
+                    history=history,
+                    preprocess=preprocess,
+                    context=context,
+                    db=db,
+                    current_user=current_user,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[chatbot] Gemini agent failed: {e}")
+                reply = self._fallback_reply(message, preprocess, context)
         else:
-            data_summary = self._lookup_phone(phone, db)
+            reply = self._fallback_reply(message, preprocess, context)
 
-        # Bước 2: Gemini tổng hợp thành reply tự nhiên
-        reply_prompt = f"""
-Bạn là trợ lý Real Caller. Dựa vào dữ liệu bên dưới, viết 1 câu trả lời ngắn gọn, thân thiện cho người dùng.
+        verdicts = self._build_verdicts(preprocess, context, tool_log)
 
-Dữ liệu:
-{data_summary}
-
-Lịch sử chat:
-{hist_str}
-
-Câu hỏi: "{message}"
-
-Yêu cầu: Trả lời tự nhiên bằng tiếng Việt, 2-4 câu. Cảnh báo rõ nếu nguy hiểm. Không lặp lại toàn bộ dữ liệu thô.
-"""
-        try:
-            resp = self.client.models.generate_content(
-                model=self.model_name, contents=reply_prompt
-            )
-            reply = resp.text.strip()
-        except:
-            reply = data_summary  # Fallback: dùng dữ liệu thô
-
-        self._save_message(db, current_user.id, "chatbot", reply)
+        self._save(db, current_user.id, "chatbot", reply)
         db.commit()
-        return ChatResponse(reply=reply)
+
+        return ChatResponse(reply=reply, verdicts=verdicts)
 
 
 chatbot_service = ChatbotService()

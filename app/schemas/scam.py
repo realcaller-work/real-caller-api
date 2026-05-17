@@ -2,11 +2,12 @@ from datetime import date
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr
 from app.models.scam_number import ScamType, RiskLevel
+from app.models.scam_report import ReportSource
 
 class MessageItem(BaseModel):
     sender: str
     content: str
-    
+
 class ConversationCheck(BaseModel):
     phone: str
     messages: Optional[List[MessageItem]] = []
@@ -28,7 +29,6 @@ class UserInfo(BaseModel):
     email: Optional[EmailStr] = None
     birthday: Optional[date] = None
     gender: Optional[str] = None
-    is_verified: bool = False
 
 class ScamCheckResult(BaseModel):
     phone: str
@@ -42,8 +42,8 @@ class ScamCheckResponse(BaseModel):
 class ScamReportCreate(BaseModel):
     phone: str
     type: ScamType = ScamType.OTHER
+    source: ReportSource = ReportSource.USER_MANUAL
     description: Optional[str] = None
-    evidence_urls: Optional[List[str]] = []
     messages: Optional[List[dict]] = []
 
 class ScamReportResponse(BaseModel):

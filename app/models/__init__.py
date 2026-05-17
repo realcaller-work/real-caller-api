@@ -4,3 +4,4 @@ from app.models.device import Device
 from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport
 from app.models.chat_history import ChatHistory
+from app.models.refresh_token import RefreshToken

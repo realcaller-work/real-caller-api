@@ -1,7 +1,7 @@
 import uuid
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, Enum as SQLEnum, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import Column, String, DateTime, Integer, Enum as SQLEnum, Index
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.models.base import Base
 
@@ -26,9 +26,6 @@ class ScamNumber(Base):
     scam_type = Column(SQLEnum(ScamType, name="scam_type"), default=ScamType.OTHER)
     risk_level = Column(SQLEnum(RiskLevel, name="risk_level"), default=RiskLevel.MEDIUM)
     reportCount = Column(Integer, default=1)
-    is_verified = Column(Boolean, default=False)
-    is_ai_vetted = Column(Boolean, default=False)
-    metadata_info = Column(JSONB, nullable=True) # AI analysis summary or additional info
     createdAt = Column(DateTime(timezone=True), server_default=func.now())
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 

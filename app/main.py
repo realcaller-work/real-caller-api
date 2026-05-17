@@ -11,6 +11,7 @@ from app.models.scam_number import ScamNumber
 from app.models.scam_report import ScamReport
 from app.models.user import User
 from app.models.chat_history import ChatHistory
+from app.models.refresh_token import RefreshToken
 
 import os
 import json

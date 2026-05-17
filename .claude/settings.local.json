@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git config *)",
+      "Bash(git branch *)",
+      "Bash(Select-String \"backup\")",
+      "Bash(git checkout *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(py --version)",
+      "Bash(where python *)",
+      "Bash(where py *)",
+      "Bash(py *)",
+      "PowerShell($currentPath = [Environment]::GetEnvironmentVariable\\('Path', 'User'\\); Write-Output \"=== CURRENT USER PATH ===\"; $currentPath -split ';' | ForEach-Object { Write-Output $_ })",
+      "PowerShell(Out-File *)",
+      "PowerShell(pip *)",
+      "Bash(dir D:DoAnTotNghiepreal-caller-api *)"
+    ]
+  }
+}

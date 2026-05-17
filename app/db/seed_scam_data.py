@@ -2,20 +2,15 @@ import sys
 import os
 import httpx
 import random
-import uuid
-import json
 from typing import List
 
-# Fix for potential circular imports and path issues
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(project_root)
 
-# Import models after fixing path
 from app.db.session import SessionLocal
 from app.models.scam_number import ScamNumber, ScamType, RiskLevel
 from app.models.scam_report import ScamReport
-from app.models.device import Device, PlatformType
 from app.services.utils import normalize_phone
 
 DATA_URL = "https://raw.githubusercontent.com/hoangvt2501/data_scam/main/localization/tele28k_scam.json"
@@ -49,27 +44,12 @@ def seed_data(limit: int = 100):
             response = client.get(DATA_URL)
             response.raise_for_status()
             data = response.json()
-        
+
         print(f"✅ Downloaded {len(data)} samples from dataset.")
-        
-        # Shuffle to get diverse samples
+
         random.shuffle(data)
         samples = data[:limit]
-        
-        # Ensure a system device exists for reporting
-        system_device_id = "SYSTEM_SEEDER"
-        device = db.query(Device).filter(Device.deviceId == system_device_id).first()
-        if not device:
-            device = Device(
-                deviceId=system_device_id,
-                platform=PlatformType.WEB
-            )
-            db.add(device)
-            db.commit()
-            db.refresh(device)
-            print(f"📱 Created system device: {system_device_id}")
-        
-        # Clear existing data to avoid confusion with non-normalized numbers
+
         print("🧹 Clearing existing scam data...")
         db.query(ScamReport).delete()
         db.query(ScamNumber).delete()
@@ -81,46 +61,27 @@ def seed_data(limit: int = 100):
             phone = normalize_phone(raw_phone)
             label_name = item.get("label_name", "Unknown")
             scam_type = map_scam_type(label_name)
-            
-            # Use dialogues to form a description for the report
-            dialogues = item.get("dialogue", [])
-            dialogue_text = "\n".join([f"{d['role']}: {d['content']}" for d in dialogues[:4]])
-            
-            # Check if phone exists
+
             existing = db.query(ScamNumber).filter(ScamNumber.phone == phone).first()
             if existing:
                 continue
-            
+
             scam_number = ScamNumber(
                 phone=phone,
                 scam_type=scam_type,
                 risk_level=RiskLevel.HIGH if random.random() > 0.3 else RiskLevel.CRITICAL,
                 reportCount=random.randint(10, 100),
-                is_verified=True,
-                metadata_info=json.dumps({
-                    "source": "hoangvt2501/data_scam",
-                    "category": label_name,
-                    "sample_id": item.get("_id")
-                }, ensure_ascii=False)
             )
             db.add(scam_number)
-            
-            # Add a detailed report
-            report = ScamReport(
-                phone=phone,
-                deviceId=system_device_id,
-                reportType=scam_type.value,
-                description=f"Dataset Seed - {label_name}:\n{dialogue_text}..."
-            )
-            db.add(report)
-            
+            db.add(ScamReport(phone=phone))
+
             count += 1
             if count % 20 == 0:
                 print(f"📦 Seeded {count} records...")
-        
+
         db.commit()
         print(f"✨ Seeding completed! Added {count} fraudulent numbers to database.")
-        
+
     except httpx.HTTPError as he:
         print(f"❌ Network error: {he}")
     except Exception as e:
@@ -132,12 +93,11 @@ def seed_data(limit: int = 100):
         db.close()
 
 if __name__ == "__main__":
-    # Allow passing limit as argument
     seed_limit = 100
     if len(sys.argv) > 1:
         try:
             seed_limit = int(sys.argv[1])
         except ValueError:
             pass
-            
+
     seed_data(seed_limit)

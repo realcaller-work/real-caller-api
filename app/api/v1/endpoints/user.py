@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.api.deps import get_current_user
@@ -11,9 +11,6 @@ router = APIRouter()
 def get_user_profile(
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Get current user profile information.
-    """
     return current_user
 
 @router.put("/profile", response_model=UserProfileResponse)
@@ -22,9 +19,6 @@ def update_user_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Update current user profile information.
-    """
     if user_in.fullName is not None:
         current_user.fullName = user_in.fullName
     if user_in.avatar is not None:
@@ -35,7 +29,7 @@ def update_user_profile(
         current_user.birthday = user_in.birthday
     if user_in.gender is not None:
         current_user.gender = user_in.gender
-        
+
     db.commit()
     db.refresh(current_user)
     return current_user
