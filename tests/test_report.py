@@ -1,0 +1,89 @@
+import asyncio
+import httpx
+import uuid
+import sys
+import os
+sys.path.append(os.getcwd())
+from app.core.config import settings
+
+async def test_scam_report():
+    print("🚀 Đang khởi chạy bài test REPORT SCAM con người...")
+    base_url = settings.TEST_API_BASE_URL
+    
+    device_id = f"tester-{uuid.uuid4().hex[:6]}"
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # 1. Đăng ký thiết bị để lấy Token
+        print(f"📱 Bước 1: Đăng ký thiết bị giả lập ({device_id})...")
+        reg_res = await client.post(
+            f"{base_url}/device/register",
+            json={
+                "deviceId": device_id,
+                "platform": "web",
+                "phone": "+84111222333"
+            }
+        )
+        
+        if reg_res.status_code != 200:
+            print(f"❌ Đăng ký thất bại: {reg_res.text}")
+            return
+            
+        token = reg_res.json().get("accessToken")
+        headers = {"Authorization": f"Bearer {token}"}
+        print("✅ Đăng ký thành công, đã nhận JWT Token.")
+
+        # 2. Gửi báo cáo lừa đảo mẫu (Report)
+        print("\n📤 Bước 2: Đang gửi báo cáo lừa đảo mẫu lên Server...")
+        
+        # Dữ liệu mẫu mạo danh cục thuế (Context này cực kỳ giống thực tế)
+        report_data = {
+            "phone": "+84944555666",
+            "type": "IMPERSONATION",
+            "description": "Đối tượng mạo danh cán bộ thuế gọi điện hù dọa và gửi link lạ.",
+            "messages": [
+                {"sender": "Kẻ lừa đảo", "content": "Chào anh, tôi là cán bộ chi cục thuế. Anh có khoản nợ thuế thu nhập cá nhân chưa quyết toán."},
+                {"sender": "Bạn", "content": "Tôi đã nộp hết rồi mà?"},
+                {"sender": "Kẻ lừa đảo", "content": "Hệ thống đang lỗi, anh cần cài app 'Tổng Cục Thuế' tại link thue.gov-vn.xyz/app.apk để tự đối soát và nhận hoàn tiền."},
+                {"sender": "Kẻ lừa đảo", "content": "Nếu không làm ngay tài khoản ngân hàng của anh sẽ bị phong tỏa."}
+            ]
+        }
+
+        report_res = await client.post(
+            f"{base_url}/scam/report",
+            json=report_data,
+            headers=headers
+        )
+
+        if report_res.status_code == 200:
+            print("✅ Gửi REPORT thành công!")
+            data = report_res.json()
+            print("\n--- PHẢN HỒI TỪ SERVER (ScamReportResponse) ---")
+            print(f"  success:            {data.get('success')}")
+            print(f"  message:            {data.get('message')}")
+            print(f"  report_id:          {data.get('report_id')}")
+            print(f"  action_taken:       {data.get('action_taken')}")
+            print(f"  updated_risk_level: {data.get('updated_risk_level')}")
+            
+            # Kiểm tra xem dữ liệu có thực sự vào DB chưa bằng cách Check lại số này
+            print("\n🔍 Bước 3: Kiểm tra lại số điện thoại vừa báo cáo...")
+            check_res = await client.post(
+                f"{base_url}/scam/check-phones",
+                json={"phones": ["+84944555666"]},
+                headers=headers
+            )
+            
+            if check_res.status_code == 200:
+                results = check_res.json().get("results", [])
+                for r in results:
+                    t = r.get('type')
+                    if t in ['scam', 'spam']:
+                        print(f"✅ XÁC NHẬN: Số {r.get('phone')} đã nằm trong danh sách ĐEN của Database (type={t}).")
+                    elif t == 'unknown':
+                        print(f"⚠️  Số {r.get('phone')} vẫn chưa có trong blacklist (AI đánh giá rủi ro thấp).")
+                    else:
+                        print(f"ℹ️  Số {r.get('phone')} -> type={t}")
+        else:
+            print(f"❌ Gửi báo cáo thất bại: {report_res.status_code} - {report_res.text}")
+
+if __name__ == "__main__":
+    asyncio.run(test_scam_report())

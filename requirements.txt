@@ -1,0 +1,22 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+alembic
+psycopg2-binary
+python-dotenv
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+pytest
+httpx
+pyvi
+python-docx
+torch
+transformers
+requests
+gunicorn
+firebase-admin
+email-validator
+google-genai
+# accelerate # Required for transformers Trainer on some systems

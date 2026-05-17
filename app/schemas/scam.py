@@ -1,0 +1,54 @@
+from datetime import date
+from typing import List, Optional
+from pydantic import BaseModel, EmailStr
+from app.models.scam_number import ScamType, RiskLevel
+
+class MessageItem(BaseModel):
+    sender: str
+    content: str
+    
+class ConversationCheck(BaseModel):
+    phone: str
+    messages: Optional[List[MessageItem]] = []
+
+class ScamCheckPhonesRequest(BaseModel):
+    phones: List[str]
+
+class ScamCheckConversationsRequest(BaseModel):
+    conversations: List[ConversationCheck]
+
+class ScamInfo(BaseModel):
+    scam_type: Optional[ScamType] = None
+    risk_level: Optional[RiskLevel] = None
+    reports: Optional[int] = 0
+    ai_confidence: Optional[float] = 0.0
+
+class UserInfo(BaseModel):
+    fullName: Optional[str] = None
+    email: Optional[EmailStr] = None
+    birthday: Optional[date] = None
+    gender: Optional[str] = None
+    is_verified: bool = False
+
+class ScamCheckResult(BaseModel):
+    phone: str
+    type: str # 'scam', 'spam', 'unknown', 'normal'
+    scam_info: Optional[ScamInfo] = None
+    user_info: Optional[UserInfo] = None
+
+class ScamCheckResponse(BaseModel):
+    results: List[ScamCheckResult]
+
+class ScamReportCreate(BaseModel):
+    phone: str
+    type: ScamType = ScamType.OTHER
+    description: Optional[str] = None
+    evidence_urls: Optional[List[str]] = []
+    messages: Optional[List[dict]] = []
+
+class ScamReportResponse(BaseModel):
+    success: bool
+    message: str
+    report_id: str
+    action_taken: str
+    updated_risk_level: Optional[RiskLevel] = None
