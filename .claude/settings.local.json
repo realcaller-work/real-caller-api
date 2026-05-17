@@ -16,7 +16,9 @@
       "PowerShell($currentPath = [Environment]::GetEnvironmentVariable\\('Path', 'User'\\); Write-Output \"=== CURRENT USER PATH ===\"; $currentPath -split ';' | ForEach-Object { Write-Output $_ })",
       "PowerShell(Out-File *)",
       "PowerShell(pip *)",
-      "Bash(dir D:DoAnTotNghiepreal-caller-api *)"
+      "Bash(dir D:DoAnTotNghiepreal-caller-api *)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python *)"
     ]
   }
 }

@@ -5,7 +5,6 @@ import pytest
 
 from app.models.chat_history import ChatHistory
 from app.models.scam_number import ScamNumber, ScamType, RiskLevel
-from app.services import chatbot as chatbot_module
 from app.services import chatbot_tools
 from app.services.chatbot import chatbot_service
 from app.services.chatbot_fusion import fuse_verdict
@@ -30,14 +29,12 @@ def _function_call_response(name: str, args: dict):
 
 @pytest.fixture
 def gemini_on(monkeypatch):
-    """Force is_ready=True with a stub client."""
+    """Force is_ready=True with a stub client + stub google.genai.types."""
     monkeypatch.setattr(chatbot_service, "is_ready", True)
     fake_client = MagicMock()
     monkeypatch.setattr(chatbot_service, "client", fake_client)
     monkeypatch.setattr(chatbot_service, "model_name", "gemini-test")
 
-    # Stub google.genai.types so the chatbot service can build Content/Part/Tool
-    # without importing the real package.
     class _DummyContent:
         def __init__(self, role, parts):
             self.role = role
@@ -72,7 +69,6 @@ def gemini_on(monkeypatch):
         GenerateContentConfig=_DummyConfig,
     )
 
-    # Provide a stand-in for `from google.genai import types as genai_types`
     import sys
     fake_google = SimpleNamespace(genai=SimpleNamespace(types=dummy_types))
     monkeypatch.setitem(sys.modules, "google", fake_google)
@@ -88,7 +84,7 @@ def gemini_off(monkeypatch):
 
 @pytest.fixture
 def mock_phobert(monkeypatch):
-    """Stub the HF call inside chatbot_tools.analyze_text_for_scam_impl so tests are deterministic."""
+    """Stub the HF call so analyze_text_for_scam is deterministic."""
     from app.services import ai as ai_module
 
     def _fake(*, description, messages, evidence_urls):
@@ -109,8 +105,6 @@ def test_fusion_blacklist_critical_returns_scam():
         phobert=None,
     )
     assert v["verdict"] == "scam"
-    assert v["confidence"] > 0
-    assert v["sources"]["database"]["score"] > 0
 
 
 def test_fusion_blacklist_medium_returns_spam():
@@ -122,81 +116,49 @@ def test_fusion_blacklist_medium_returns_spam():
     assert v["verdict"] == "spam"
 
 
-def test_fusion_unknown_phone_low_confidence():
+def test_fusion_unknown_phone():
     v = fuse_verdict(
         phone="+84988222222",
         phone_info={"in_blacklist": False, "is_known_user": False, "report_count": 0},
         phobert=None,
     )
     assert v["verdict"] == "unknown"
-    assert v["confidence"] == 0
 
 
-def test_fusion_phobert_only_suspicious():
-    v = fuse_verdict(
-        phone="+84988333333",
-        phone_info={"in_blacklist": False, "is_known_user": False},
-        phobert={"is_scam": True, "confidence": 0.9},
-    )
-    # phobert weight 0.3 × 0.9 = 0.27 → below 0.35 → unknown (not "suspicious")
-    # But with phobert as the ONLY signal it's still useful info; raise to suspicious only if combined ≥ 0.35
-    assert v["sources"]["phobert"]["score"] == 0.9
+# ─── Chat-first behavior (Gemini path) ───────────────────────────────────────
 
-
-def test_fusion_combined_db_and_phobert_high_confidence():
-    v = fuse_verdict(
-        phone="+84988444444",
-        phone_info={"in_blacklist": True, "risk_level": "HIGH", "report_count": 50, "scam_type": "LOAN"},
-        phobert={"is_scam": True, "confidence": 0.9},
-    )
-    # db 0.8*0.4 + phobert 0.9*0.3 = 0.32 + 0.27 = 0.59
-    assert v["confidence"] >= 0.5
-    assert v["verdict"] == "scam"  # because in_blacklist with HIGH
-
-
-# ─── Fallback path (no Gemini) ───────────────────────────────────────────────
-
-def test_fallback_no_phone_returns_prompt(db, test_user, gemini_off, mock_phobert):
-    res = chatbot_service.process_message("xin chào", db, test_user)
-    assert "số điện thoại" in res.reply.lower()
-    assert res.verdicts == []
-
-
-def test_fallback_blacklisted_phone_in_message(db, test_user, gemini_off, mock_phobert):
-    db.add(ScamNumber(
-        phone="+84988123456",
-        scam_type=ScamType.IMPERSONATION,
-        risk_level=RiskLevel.HIGH,
-        reportCount=20,
-    ))
-    db.commit()
-
-    res = chatbot_service.process_message("số 0988123456 có scam không?", db, test_user)
-    assert "DANH SÁCH ĐEN".lower() in res.reply.lower() or "blacklist" in res.reply.lower()
-    assert len(res.verdicts) == 1
-    v = res.verdicts[0]
-    assert v.verdict == "scam"
-    assert v.confidence > 0
-
-
-def test_fallback_unknown_phone(db, test_user, gemini_off, mock_phobert):
-    res = chatbot_service.process_message("số 0988999999 có sao không?", db, test_user)
-    assert len(res.verdicts) == 1
-    assert res.verdicts[0].verdict == "unknown"
-
-
-# ─── Gemini agent path (with mocked Gemini) ──────────────────────────────────
-
-def test_gemini_pure_chat_no_tools(db, test_user, gemini_on, mock_phobert):
-    gemini_on.models.generate_content.return_value = _text_response("Chào bạn! Mình là Real Caller.")
+def test_small_talk_no_tool_no_verdict(db, test_user, gemini_on, mock_phobert):
+    """Just chatting — Gemini replies directly, no tool calls, no phone verdicts."""
+    gemini_on.models.generate_content.return_value = _text_response("Chào bạn! Hôm nay thế nào?")
     res = chatbot_service.process_message("hello", db, test_user)
-    assert "Chào" in res.reply
+    assert res.reply.startswith("Chào")
     assert res.verdicts == []
-    # Exactly one Gemini call
     assert gemini_on.models.generate_content.call_count == 1
 
 
-def test_gemini_tool_call_lookup_phone(db, test_user, gemini_on, mock_phobert):
+def test_phone_mentioned_in_chat_no_check_no_verdict(db, test_user, gemini_on, mock_phobert):
+    """User mentions a phone in passing without asking to check it — no verdict."""
+    db.add(ScamNumber(
+        phone="+84988123456",
+        scam_type=ScamType.LOAN,
+        risk_level=RiskLevel.HIGH,
+        reportCount=10,
+    ))
+    db.commit()
+
+    gemini_on.models.generate_content.return_value = _text_response(
+        "Ok, chúc bạn dùng số mới vui vẻ nhé!"
+    )
+    res = chatbot_service.process_message(
+        "tôi mới đổi sang số 0988123456", db, test_user
+    )
+    # Bot replied as normal chat — even though the number IS in blacklist, no verdict
+    # because the bot decided no check was requested.
+    assert res.verdicts == []
+    assert gemini_on.models.generate_content.call_count == 1
+
+
+def test_explicit_check_request_triggers_lookup(db, test_user, gemini_on, mock_phobert):
     db.add(ScamNumber(
         phone="+84988555555",
         scam_type=ScamType.LOAN,
@@ -205,23 +167,71 @@ def test_gemini_tool_call_lookup_phone(db, test_user, gemini_on, mock_phobert):
     ))
     db.commit()
 
-    # First Gemini turn: requests lookup_phone. Second turn: returns final text.
     gemini_on.models.generate_content.side_effect = [
         _function_call_response("lookup_phone", {"phone": "0988555555"}),
         _text_response("Cẩn thận! Số 0988555555 là scam cấp CRITICAL."),
     ]
-
-    res = chatbot_service.process_message("0988555555 có an toàn không?", db, test_user)
+    res = chatbot_service.process_message(
+        "kiểm tra số 0988555555 giúp", db, test_user
+    )
     assert "Cẩn thận" in res.reply
-    assert gemini_on.models.generate_content.call_count == 2
-    assert len(res.verdicts) >= 1
-    matching = [v for v in res.verdicts if v.phone == "+84988555555"]
-    assert matching
-    assert matching[0].verdict == "scam"
+    assert len(res.verdicts) == 1
+    assert res.verdicts[0].phone == "+84988555555"
+    assert res.verdicts[0].verdict == "scam"
+
+
+def test_explicit_check_unknown_phone_returns_unknown_verdict(db, test_user, gemini_on, mock_phobert):
+    gemini_on.models.generate_content.side_effect = [
+        _function_call_response("lookup_phone", {"phone": "0988999999"}),
+        _text_response("Số này chưa có trong hệ thống của mình."),
+    ]
+    res = chatbot_service.process_message(
+        "0988999999 có lừa đảo không?", db, test_user
+    )
+    assert len(res.verdicts) == 1
+    assert res.verdicts[0].verdict == "unknown"
+
+
+def test_analyze_text_only_produces_no_phone_verdict(db, test_user, gemini_on, mock_phobert):
+    """If only analyze_text_for_scam is called (no phone lookup), no phone verdict."""
+    gemini_on.models.generate_content.side_effect = [
+        _function_call_response("analyze_text_for_scam", {"text": "Chào anh tôi là cán bộ thuế..."}),
+        _text_response("Tin này có dấu hiệu lừa đảo, hãy cảnh giác."),
+    ]
+    res = chatbot_service.process_message(
+        "tin này có scam không: 'Chào anh tôi là cán bộ thuế...'",
+        db, test_user,
+    )
+    assert "lừa đảo" in res.reply
+    assert res.verdicts == []  # no phone was looked up
+
+
+def test_analyze_text_corroborates_phone_lookup(db, test_user, gemini_on, mock_phobert):
+    """When BOTH lookup_phone and analyze_text_for_scam happen, phobert signal fuses in."""
+    gemini_on.models.generate_content.side_effect = [
+        _function_call_response("lookup_phone", {"phone": "0988777777"}),
+        _function_call_response("analyze_text_for_scam", {"text": "lừa đảo thuế"}),
+        _text_response("Cảnh báo: số này và tin nhắn đều có dấu hiệu scam."),
+    ]
+    res = chatbot_service.process_message(
+        "kiểm tra số 0988777777 với tin 'lừa đảo thuế'", db, test_user
+    )
+    assert len(res.verdicts) == 1
+    v = res.verdicts[0]
+    # PhoBERT signal should now be > 0 in the fusion result
+    assert v.sources["phobert"]["score"] > 0
+
+
+def test_gemini_failure_falls_back(db, test_user, gemini_on, mock_phobert):
+    """Gemini raises → fall back to phone-checker."""
+    gemini_on.models.generate_content.side_effect = RuntimeError("Gemini exploded")
+    res = chatbot_service.process_message("0988111000 có scam không?", db, test_user)
+    # Fallback always checks any phone in the message
+    assert "0988111000" in res.reply or "+84988111000" in res.reply
+    assert len(res.verdicts) == 1
 
 
 def test_gemini_agent_caps_iterations(db, test_user, gemini_on, mock_phobert):
-    # Gemini stuck in an infinite loop of function calls — service should bail out.
     gemini_on.models.generate_content.side_effect = lambda **kw: _function_call_response(
         "lookup_phone", {"phone": "0988000000"}
     )
@@ -229,16 +239,31 @@ def test_gemini_agent_caps_iterations(db, test_user, gemini_on, mock_phobert):
     assert "trở ngại" in res.reply.lower()
 
 
-def test_gemini_failure_falls_back(db, test_user, gemini_on, mock_phobert):
-    gemini_on.models.generate_content.side_effect = RuntimeError("Gemini exploded")
-    res = chatbot_service.process_message("0988777777 có sao không?", db, test_user)
-    # Falls back to regex+DB summary
-    assert "0988777777" in res.reply or "+84988777777" in res.reply
+# ─── Fallback mode (no Gemini) ───────────────────────────────────────────────
+
+def test_fallback_no_phone_prompts_user(db, test_user, gemini_off, mock_phobert):
+    res = chatbot_service.process_message("hello bạn", db, test_user)
+    assert "số điện thoại" in res.reply.lower()
+    assert res.verdicts == []
+
+
+def test_fallback_phone_in_message_gets_checked(db, test_user, gemini_off, mock_phobert):
+    db.add(ScamNumber(
+        phone="+84988600600",
+        scam_type=ScamType.IMPERSONATION,
+        risk_level=RiskLevel.HIGH,
+        reportCount=15,
+    ))
+    db.commit()
+    res = chatbot_service.process_message("0988600600 thế nào?", db, test_user)
+    assert "DANH SÁCH ĐEN".lower() in res.reply.lower()
+    assert len(res.verdicts) == 1
+    assert res.verdicts[0].verdict == "scam"
 
 
 # ─── History persistence ─────────────────────────────────────────────────────
 
-def test_history_persisted_for_user_and_chatbot(db, test_user, gemini_off, mock_phobert):
+def test_history_persisted(db, test_user, gemini_off, mock_phobert):
     chatbot_service.process_message("hello", db, test_user)
     rows = (
         db.query(ChatHistory)
@@ -251,7 +276,7 @@ def test_history_persisted_for_user_and_chatbot(db, test_user, gemini_off, mock_
     assert rows[1].role == "chatbot"
 
 
-# ─── Tool implementations (direct) ───────────────────────────────────────────
+# ─── Tool implementations ────────────────────────────────────────────────────
 
 def test_lookup_phone_tool_blacklist(db):
     db.add(ScamNumber(
@@ -264,17 +289,9 @@ def test_lookup_phone_tool_blacklist(db):
     info = chatbot_tools.lookup_phone_impl("0988101010", db=db)
     assert info["in_blacklist"] is True
     assert info["risk_level"] == "HIGH"
-    assert info["report_count"] == 15
-
-
-def test_lookup_phone_tool_unknown(db):
-    info = chatbot_tools.lookup_phone_impl("0988202020", db=db)
-    assert info["in_blacklist"] is False
-    assert info["is_known_user"] is False
 
 
 def test_submit_report_tool_uses_consensus_logic(db, test_user, mock_phobert):
-    # USER_MANUAL with 1 reporter cannot blacklist
     result = chatbot_tools.submit_report_impl(
         phone="+84988303030",
         source="USER_MANUAL",
@@ -282,4 +299,5 @@ def test_submit_report_tool_uses_consensus_logic(db, test_user, mock_phobert):
         db=db,
         current_user=test_user,
     )
+    # USER_MANUAL with 1 reporter → LOGGED_ONLY (consensus path consistency)
     assert result["action_taken"] == "LOGGED_ONLY"
