@@ -13,6 +13,8 @@ FastAPI backend for the Real Caller Android application. Hệ thống API phát 
 
 ## 🛠️ Hướng dẫn cài đặt
 
+> Muốn tự setup từ đầu (local → deploy) theo checklist chi tiết: xem `docs/SETUP_AND_DEPLOYMENT.md`.
+
 ### 1. Cài đặt Dependencies
 
 ```bash
