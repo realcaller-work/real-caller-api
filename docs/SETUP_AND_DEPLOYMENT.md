@@ -67,7 +67,7 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 
 Hướng dẫn chọn Firebase credentials:
 - Local dev: ưu tiên `FIREBASE_CREDENTIALS_PATH` (trỏ tới file JSON service account trên máy).
-- Cloud/Render: ưu tiên `FIREBASE_CREDENTIALS_JSON` (base64 của JSON), hoặc mount secret file tương ứng path.
+- Cloud/Render: ưu tiên mount **Secret File** rồi dùng `FIREBASE_CREDENTIALS_PATH`; chỉ dùng `FIREBASE_CREDENTIALS_JSON` khi bạn không thể dùng secret file.
 - Encode JSON sang base64 (Linux/GNU):
   ```bash
   base64 -w 0 firebase-adminsdk.json
