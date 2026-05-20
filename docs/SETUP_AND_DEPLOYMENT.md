@@ -11,7 +11,7 @@ Yêu cầu:
 Tạo virtualenv và cài dependencies:
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
@@ -23,7 +23,7 @@ pip install -r requirements.txt
 Tạo file `.env` từ mẫu:
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 cp .env.example .env
 ```
 
@@ -70,7 +70,7 @@ psql -U postgres -h localhost -c "CREATE DATABASE \"check-phone-scam\";"
 Chạy migration:
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 alembic upgrade head
 ```
@@ -78,7 +78,7 @@ alembic upgrade head
 ## 4) Chạy backend local
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
@@ -93,7 +93,7 @@ Kiểm tra nhanh:
 Tạo user test:
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 python create_test_user.py
 ```
@@ -101,7 +101,7 @@ python create_test_user.py
 Seed dữ liệu:
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 python seed.py
 ```
@@ -109,7 +109,7 @@ python seed.py
 Reset DB (cẩn thận, xoá sạch schema `public`):
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 python reset_db.py
 ```
@@ -117,7 +117,7 @@ python reset_db.py
 ## 6) Kiểm thử
 
 ```bash
-cd /home/runner/work/real-caller-api/real-caller-api
+cd /path/to/real-caller-api
 source .venv/bin/activate
 pytest
 ```
@@ -152,6 +152,5 @@ Sau deploy, test lại:
 ## 8) Vận hành sau deploy
 
 - Mỗi lần đổi schema: tạo migration mới rồi deploy để `alembic upgrade head` chạy tự động.
-- Trước migration phá huỷ dữ liệu (drop/rename): backup DB trên Render trước.
+- Trước migration phá hủy dữ liệu (drop/rename): backup DB trên Render trước.
 - Theo dõi logs khi boot app để kiểm tra Firebase init và API key đã nạp đúng.
-
