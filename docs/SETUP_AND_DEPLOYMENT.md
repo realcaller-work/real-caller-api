@@ -59,6 +59,24 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_DAYS=365
 ```
 
+Gợi ý tạo `SECRET_KEY` mạnh:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+```
+
+Hướng dẫn chọn Firebase credentials:
+- Local dev: ưu tiên `FIREBASE_CREDENTIALS_PATH` (trỏ tới file JSON service account trên máy).
+- Cloud/Render: ưu tiên `FIREBASE_CREDENTIALS_JSON` (base64 của JSON), hoặc mount secret file tương ứng path.
+- Encode JSON sang base64:
+  ```bash
+  base64 -w 0 firebase-adminsdk.json
+  ```
+
+Lưu ý bảo mật token:
+- `REFRESH_TOKEN_EXPIRE_DAYS=365` là cấu hình mặc định để ưu tiên trải nghiệm.
+- Production nên cân nhắc giảm xuống (ví dụ 30–90 ngày) theo chính sách bảo mật của hệ thống.
+
 ## 3) Khởi tạo PostgreSQL & chạy migration
 
 Tạo DB rỗng (ví dụ local):
