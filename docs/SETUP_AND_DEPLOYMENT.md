@@ -37,7 +37,7 @@ API_V1_STR="/api/v1"
 PORT=8000
 
 # BẮT BUỘC
-SECRET_KEY=replace_with_a_long_random_secret_key
+SECRET_KEY=CHANGE_ME_INSECURE_DEFAULT
 SQLALCHEMY_DATABASE_URI=postgresql://postgres:postgres@localhost:5432/check-phone-scam
 
 # CORS (đổi theo frontend của bạn)
@@ -56,7 +56,7 @@ GEMINI_API_KEY=
 
 # Token config (mặc định)
 ACCESS_TOKEN_EXPIRE_MINUTES=60
-REFRESH_TOKEN_EXPIRE_DAYS=365
+REFRESH_TOKEN_EXPIRE_DAYS=90
 ```
 
 Gợi ý tạo `SECRET_KEY` mạnh:
@@ -72,10 +72,14 @@ Hướng dẫn chọn Firebase credentials:
   ```bash
   base64 -w 0 firebase-adminsdk.json
   ```
+  macOS có thể dùng:
+  ```bash
+  base64 -i firebase-adminsdk.json
+  ```
 
 Lưu ý bảo mật token:
-- `REFRESH_TOKEN_EXPIRE_DAYS=365` là cấu hình mặc định để ưu tiên trải nghiệm.
-- Production nên cân nhắc giảm xuống (ví dụ 30–90 ngày) theo chính sách bảo mật của hệ thống.
+- App default hiện tại là `365` ngày nếu bạn không override trong env.
+- Mẫu `.env` ở đây đặt `90` ngày để an toàn hơn khi triển khai thực tế.
 
 ## 3) Khởi tạo PostgreSQL & chạy migration
 
