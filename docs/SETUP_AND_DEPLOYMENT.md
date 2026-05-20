@@ -160,7 +160,7 @@ pytest
 5. Set environment variables (giống local, tối thiểu phải có):
    - `SQLALCHEMY_DATABASE_URI` (Render Postgres URL)
    - `SECRET_KEY`
-   - Firebase (chọn 1): `FIREBASE_CREDENTIALS_JSON` (base64) **hoặc** mount Secret File và set `FIREBASE_CREDENTIALS_PATH`
+   - Firebase (khuyến nghị): ưu tiên mount Secret File + `FIREBASE_CREDENTIALS_PATH`; chỉ dùng `FIREBASE_CREDENTIALS_JSON` (base64) khi không thể dùng Secret File
    - `HF_TOKEN`, `HF_API_URL` (nếu dùng AI scam check)
    - `GEMINI_API_KEY` (nếu dùng chatbot)
    - Nếu dùng Secret File trên Render: vào service của bạn → **Environment** → **Secret Files** → upload `firebase-adminsdk.json`, rồi set `FIREBASE_CREDENTIALS_PATH` trỏ đúng tên file đó.
