@@ -163,6 +163,7 @@ pytest
    - Firebase (chọn 1): `FIREBASE_CREDENTIALS_JSON` (base64) **hoặc** mount Secret File và set `FIREBASE_CREDENTIALS_PATH`
    - `HF_TOKEN`, `HF_API_URL` (nếu dùng AI scam check)
    - `GEMINI_API_KEY` (nếu dùng chatbot)
+   - Nếu dùng Secret File trên Render: vào service của bạn → **Environment** → **Secret Files** → upload `firebase-adminsdk.json`, rồi set `FIREBASE_CREDENTIALS_PATH` trỏ đúng tên file đó.
 
 Sau deploy, test lại:
 - `/api/v1/auth/login`
