@@ -39,6 +39,7 @@ PORT=8000
 # BẮT BUỘC
 SECRET_KEY=GENERATE_USING_COMMAND_BELOW
 SQLALCHEMY_DATABASE_URI=postgresql://postgres:postgres@localhost:5432/check-phone-scam
+# Đổi user/password DB thật, không dùng credential mặc định khi triển khai production.
 
 # CORS (đổi theo frontend của bạn)
 BACKEND_CORS_ORIGINS=["http://localhost","http://localhost:3000"]
@@ -67,7 +68,7 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 
 Hướng dẫn chọn Firebase credentials:
 - Local dev: ưu tiên `FIREBASE_CREDENTIALS_PATH` (trỏ tới file JSON service account trên máy).
-- Cloud/Render: ưu tiên mount **Secret File** rồi dùng `FIREBASE_CREDENTIALS_PATH`; chỉ dùng `FIREBASE_CREDENTIALS_JSON` khi bạn không thể dùng secret file.
+- Render deployment: ưu tiên mount **Secret File** rồi dùng `FIREBASE_CREDENTIALS_PATH`; chỉ dùng `FIREBASE_CREDENTIALS_JSON` khi bạn không thể dùng secret file.
 - Encode JSON sang base64 (Linux/GNU):
   ```bash
   base64 -w 0 firebase-adminsdk.json
