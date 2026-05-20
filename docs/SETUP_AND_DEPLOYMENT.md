@@ -38,8 +38,8 @@ PORT=8000
 
 # BẮT BUỘC
 SECRET_KEY=GENERATE_USING_COMMAND_BELOW
-SQLALCHEMY_DATABASE_URI=postgresql://postgres:postgres@localhost:5432/check-phone-scam
-# Đổi user/password DB thật, không dùng credential mặc định khi triển khai production.
+SQLALCHEMY_DATABASE_URI=postgresql://your_db_user:your_db_password@localhost:5432/check-phone-scam
+# Dùng user/password DB mạnh, không dùng credential mặc định khi triển khai production.
 
 # CORS (đổi theo frontend của bạn)
 BACKEND_CORS_ORIGINS=["http://localhost","http://localhost:3000"]
@@ -79,7 +79,7 @@ Hướng dẫn chọn Firebase credentials:
   ```
 
 Lưu ý bảo mật token:
-- App default hiện tại là `365` ngày nếu bạn không override trong env.
+- App default hiện tại cho `REFRESH_TOKEN_EXPIRE_DAYS` là `365` ngày nếu bạn không override trong env.
 - Mẫu `.env` ở đây đặt `90` ngày để an toàn hơn khi triển khai thực tế.
 
 ## 3) Khởi tạo PostgreSQL & chạy migration
@@ -160,7 +160,7 @@ pytest
 5. Set environment variables (giống local, tối thiểu phải có):
    - `SQLALCHEMY_DATABASE_URI` (Render Postgres URL)
    - `SECRET_KEY`
-   - `FIREBASE_CREDENTIALS_JSON` hoặc Secret File tương ứng `FIREBASE_CREDENTIALS_PATH`
+   - Firebase (chọn 1): `FIREBASE_CREDENTIALS_JSON` (base64) **hoặc** mount Secret File và set `FIREBASE_CREDENTIALS_PATH`
    - `HF_TOKEN`, `HF_API_URL` (nếu dùng AI scam check)
    - `GEMINI_API_KEY` (nếu dùng chatbot)
 
