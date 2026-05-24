@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -7,7 +7,7 @@ from app.models.user import User
 from app.models.scam_number import ScamNumber, RiskLevel
 from app.schemas import scam as scam_schema
 from app.services.utils import normalize_phone
-from app.services.ai import ai_service
+from app.services.ai import ai_service, AIServiceUnavailable
 from app.services.scam_report_service import submit_report
 
 router = APIRouter()
@@ -98,11 +98,17 @@ def check_conversations(
         ai_res = None
         if conv.messages:
             messages_dict = [m.model_dump() for m in conv.messages]
-            ai_res = ai_service.analyze_scam_report(
-                description="",
-                messages=messages_dict,
-                evidence_urls=[],
-            )
+            try:
+                ai_res = ai_service.analyze_scam_report(
+                    description="",
+                    messages=messages_dict,
+                    evidence_urls=[],
+                )
+            except AIServiceUnavailable:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AI analysis is temporarily unavailable. Please try again later.",
+                )
 
         is_scam = False
         scam_type = None
@@ -160,15 +166,21 @@ def report_scam(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return submit_report(
-        db=db,
-        current_user=current_user,
-        phone=report_in.phone,
-        source=report_in.source,
-        description=report_in.description or "",
-        messages=report_in.messages or [],
-        scam_type_fallback=str(report_in.type),
-    )
+    try:
+        return submit_report(
+            db=db,
+            current_user=current_user,
+            phone=report_in.phone,
+            source=report_in.source,
+            description=report_in.description or "",
+            messages=report_in.messages or [],
+            scam_type_fallback=str(report_in.type),
+        )
+    except AIServiceUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI analysis is temporarily unavailable. Please try again later.",
+        )
 
 
 @router.get("/{phone}", response_model=scam_schema.ScamCheckResult)

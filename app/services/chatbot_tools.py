@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.scam_number import ScamNumber
 from app.models.user import User
 from app.models.scam_report import ReportSource
-from app.services.ai import ai_service
+from app.services.ai import ai_service, AIServiceUnavailable
 from app.services.utils import normalize_phone
 from app.services.scam_report_service import submit_report
 
@@ -47,12 +47,14 @@ def analyze_text_for_scam_impl(text: str) -> dict[str, Any]:
     """Run the custom PhoBERT model (via HF Inference) on a chunk of conversation text."""
     if not text or not text.strip():
         return {"is_scam": False, "confidence": 0.0, "scam_type": None, "reason": "empty input"}
-    result = ai_service.analyze_scam_report(description=text, messages=[], evidence_urls=[])
+    try:
+        result = ai_service.analyze_scam_report(description=text, messages=[], evidence_urls=[])
+    except AIServiceUnavailable:
+        return {"is_scam": None, "confidence": 0.0, "scam_type": None, "reason": "ai_unavailable"}
     return {
         "is_scam": bool(result.get("is_scam")),
         "confidence": float(result.get("confidence", 0.0)),
         "scam_type": result.get("scam_type"),
-        "summary": result.get("summary"),
     }
 
 
