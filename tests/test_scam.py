@@ -110,6 +110,98 @@ def test_check_conversations_uses_ai_for_unknown_phone(authed_client, monkeypatc
     assert r["scam_info"]["ai_confidence"] == 0.9
 
 
+def test_check_conversations_skips_ai_when_phone_already_blacklisted(authed_client, db, monkeypatch):
+    """If the phone is already in scam_numbers, AI must not be invoked."""
+    db.add(ScamNumber(
+        phone="+84955500001",
+        scam_type=ScamType.LOAN,
+        risk_level=RiskLevel.HIGH,
+        reportCount=7,
+    ))
+    db.commit()
+
+    calls = {"n": 0}
+
+    def _spy(**kw):
+        calls["n"] += 1
+        return {"is_scam": True, "scam_type": "OTHER", "risk_level": "LOW", "confidence": 0.9}
+
+    monkeypatch.setattr(ai_module.ai_service, "analyze_scam_report", _spy)
+
+    res = authed_client.post(
+        "/api/v1/scam/check-conversations",
+        json={
+            "conversations": [
+                {
+                    "phone": "+84955500001",
+                    "messages": [{"sender": "X", "content": "có tin nhắn"}],
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200
+    assert calls["n"] == 0, "AI should be skipped when phone is already on the blacklist"
+    r = res.json()["results"][0]
+    # DB values win — not the (unrequested) AI ones
+    assert r["scam_info"]["risk_level"] == "HIGH"
+    assert r["scam_info"]["reports"] == 7
+
+
+def test_check_conversations_persists_new_scam_when_ai_flags(authed_client, db, monkeypatch):
+    """AI flags a fresh phone → must be inserted into scam_numbers."""
+    _mock_ai(monkeypatch, is_scam=True, confidence=0.85, scam_type="IMPERSONATION")
+    # Override risk_level too (mock helper hard-codes MEDIUM)
+    monkeypatch.setattr(
+        ai_module.ai_service,
+        "analyze_scam_report",
+        lambda **kw: {
+            "is_scam": True,
+            "scam_type": "IMPERSONATION",
+            "risk_level": "HIGH",
+            "confidence": 0.85,
+        },
+    )
+
+    assert db.query(ScamNumber).filter(ScamNumber.phone == "+84955500002").count() == 0
+
+    res = authed_client.post(
+        "/api/v1/scam/check-conversations",
+        json={
+            "conversations": [
+                {
+                    "phone": "+84955500002",
+                    "messages": [{"sender": "X", "content": "tải app công an apk này về"}],
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200
+
+    inserted = db.query(ScamNumber).filter(ScamNumber.phone == "+84955500002").first()
+    assert inserted is not None, "AI-detected scam should be persisted to scam_numbers"
+    assert inserted.scam_type == ScamType.IMPERSONATION
+    assert inserted.risk_level == RiskLevel.HIGH
+
+
+def test_check_conversations_ai_not_scam_does_not_insert(authed_client, db, monkeypatch):
+    """AI says not scam → no row added."""
+    _mock_ai(monkeypatch, is_scam=False, confidence=0.1)
+
+    res = authed_client.post(
+        "/api/v1/scam/check-conversations",
+        json={
+            "conversations": [
+                {
+                    "phone": "+84955500003",
+                    "messages": [{"sender": "X", "content": "hi"}],
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200
+    assert db.query(ScamNumber).filter(ScamNumber.phone == "+84955500003").count() == 0
+
+
 def test_report_increments_existing_scam(authed_client, db, monkeypatch):
     db.add(ScamNumber(
         phone="+84944444444",
@@ -325,13 +417,27 @@ def test_report_persists_user_id(authed_client, db, test_user, monkeypatch):
 def test_get_scam_detail_known_scam(authed_client, db):
     db.add(ScamNumber(
         phone="+84911000000", scam_type=ScamType.OTHER,
-        risk_level=RiskLevel.MEDIUM, reportCount=3,
+        risk_level=RiskLevel.HIGH, reportCount=3,
     ))
     db.commit()
 
     res = authed_client.get("/api/v1/scam/+84911000000")
     assert res.status_code == 200
-    assert res.json()["type"] == "spam"
+    assert res.json()["type"] == "scam"
+
+
+def test_get_scam_detail_medium_risk_falls_through_to_unknown(authed_client, db):
+    """MEDIUM risk lives in DB but is hidden from clients."""
+    db.add(ScamNumber(
+        phone="+84911000001", scam_type=ScamType.OTHER,
+        risk_level=RiskLevel.MEDIUM, reportCount=2,
+    ))
+    db.commit()
+
+    res = authed_client.get("/api/v1/scam/+84911000001")
+    assert res.status_code == 200
+    # No user, MEDIUM is not surfaced as scam → unknown
+    assert res.json()["type"] == "unknown"
 
 
 def test_get_scam_detail_unknown(authed_client):

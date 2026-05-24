@@ -3,9 +3,9 @@
 Tài liệu này mô tả chi tiết logic hoạt động (Flow) của từng API lõi trong hệ thống chống lừa đảo Real Caller và cung cấp các Payload mẫu để test trực tiếp trên Swagger hoặc Postman.
 
 Tất cả các API kiểm tra lừa đảo đều quy về một cấu trúc phản hồi **chuẩn phân tầng**:
-- `type`: Phân loại trạng thái (`scam`, `spam`, `normal`, `unknown`).
-- `scam_info`: Chứa thông tin lừa đảo (nếu `type` là scam/spam).
-- `user_info`: Chứa thông tin người dùng app (nếu `type` là normal).
+- `type`: Phân loại trạng thái (`scam`, `normal`, `unknown`). Chỉ trả `scam` khi `risk_level` của số là `HIGH` hoặc `CRITICAL`; các mức thấp hơn (`LOW`/`MEDIUM`) được ẩn khỏi response và fall through về `normal`/`unknown`.
+- `scam_info`: Chứa thông tin lừa đảo (nếu `type` là `scam`).
+- `user_info`: Chứa thông tin người dùng app (nếu `type` là `normal`).
 
 ---
 
@@ -16,8 +16,9 @@ Tất cả các API kiểm tra lừa đảo đều quy về một cấu trúc ph
 ### 📌 Luồng hoạt động (Flow):
 1. Nhận chuỗi phone từ Path URL và tự động chuẩn hóa định dạng (ví dụ: cạo số 0 ở đầu thay bằng `+84`).
 2. Query Database tìm trong bảng Blacklist (`ScamNumber`).
-    * Nếu có: Trả về trạng thái `scam` hoặc `spam` dựa trên cột độ rủi ro (`risk_level`).
-3. Nếu không có trong Blacklist, query DB tìm trong bảng tài khoản (`Users`).
+    * Nếu có VÀ `risk_level` là `HIGH`/`CRITICAL`: Trả về trạng thái `scam`.
+    * Nếu có nhưng `risk_level` là `LOW`/`MEDIUM`: Coi như chưa đủ rủi ro, fall through xuống bước 3 (response không hiển thị `scam`).
+3. Nếu không có trong Blacklist (hoặc bị fall through), query DB tìm trong bảng tài khoản (`Users`).
     * Nếu có: Trả về trạng thái `normal` kèm thông tin cơ bản: Tên, email, verify status.
 4. Nếu cả 2 đều không có: Trả về `unknown`.
 

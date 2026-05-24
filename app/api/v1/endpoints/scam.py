@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -9,6 +10,9 @@ from app.schemas import scam as scam_schema
 from app.services.utils import normalize_phone
 from app.services.ai import ai_service, AIServiceUnavailable
 from app.services.scam_report_service import submit_report
+
+SCAM_ENUM_VALS = ("INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER")
+SCAM_RISK_LEVELS = frozenset({RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL"})
 
 router = APIRouter()
 
@@ -22,8 +26,9 @@ def _user_info(db_user: User) -> dict:
     }
 
 
-def _scam_type_of(risk_level) -> str:
-    return "scam" if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL, "HIGH", "CRITICAL") else "spam"
+def _is_scam_risk(risk_level) -> bool:
+    """Only HIGH/CRITICAL is reported as scam to clients. LOW/MEDIUM falls through."""
+    return risk_level in SCAM_RISK_LEVELS
 
 
 @router.post("/check-phones", response_model=scam_schema.ScamCheckResponse)
@@ -47,10 +52,10 @@ def check_phones(
         db_scam = scam_map.get(norm)
         db_user = user_map.get(norm)
 
-        if db_scam:
+        if db_scam and _is_scam_risk(db_scam.risk_level):
             results.append({
                 "phone": phone,
-                "type": _scam_type_of(db_scam.risk_level),
+                "type": "scam",
                 "scam_info": {
                     "scam_type": db_scam.scam_type,
                     "risk_level": db_scam.risk_level,
@@ -90,13 +95,18 @@ def check_conversations(
     user_map = {e.phone: e for e in db.query(User).filter(User.phone.in_(normalized_phones)).all()}
 
     results = []
+    needs_commit = False
     for conv in request.conversations:
         norm = normalize_phone(conv.phone)
         db_scam = scam_map.get(norm)
         db_user = user_map.get(norm)
 
+        # Already on the blacklist at scam level (HIGH/CRITICAL) → trust DB, skip AI.
+        # LOW/MEDIUM entries still go through AI so a fresh check can escalate them.
+        already_scam = db_scam is not None and _is_scam_risk(db_scam.risk_level)
+
         ai_res = None
-        if conv.messages:
+        if not already_scam and conv.messages:
             messages_dict = [m.model_dump() for m in conv.messages]
             try:
                 ai_res = ai_service.analyze_scam_report(
@@ -116,24 +126,52 @@ def check_conversations(
         reports = 0
         confidence = 0.0
 
-        if db_scam:
+        if already_scam:
             is_scam = True
             scam_type = db_scam.scam_type
             risk_level = db_scam.risk_level
             reports = db_scam.reportCount
 
-        if ai_res and ai_res.get("is_scam"):
-            is_scam = True
-            scam_enum_vals = ["INVESTMENT", "LOAN", "RECRUITMENT", "IMPERSONATION", "OTHER"]
-            raw_type = str(ai_res.get("scam_type", "OTHER")).upper()
-            scam_type = raw_type if raw_type in scam_enum_vals else "OTHER"
-            risk_level = str(ai_res.get("risk_level", "MEDIUM")).upper()
-            confidence = ai_res.get("confidence", 0.0)
+        if not is_scam and ai_res and ai_res.get("is_scam"):
+            raw_risk = str(ai_res.get("risk_level", "HIGH")).upper()
+            # Only HIGH/CRITICAL is surfaced as scam — lower risk is silently dropped.
+            if _is_scam_risk(raw_risk):
+                is_scam = True
+                raw_type = str(ai_res.get("scam_type", "OTHER")).upper()
+                scam_type = raw_type if raw_type in SCAM_ENUM_VALS else "OTHER"
+                risk_level = raw_risk
+                confidence = ai_res.get("confidence", 0.0)
+
+                # Persist so future /check-* calls hit the DB and skip AI.
+                if db_scam is None:
+                    try:
+                        with db.begin_nested():
+                            new_entry = ScamNumber(
+                                phone=norm,
+                                scam_type=scam_type,
+                                risk_level=risk_level,
+                                reportCount=1,
+                            )
+                            db.add(new_entry)
+                        scam_map[norm] = new_entry
+                        reports = new_entry.reportCount
+                        needs_commit = True
+                    except IntegrityError:
+                        existing = db.query(ScamNumber).filter(ScamNumber.phone == norm).first()
+                        if existing:
+                            scam_map[norm] = existing
+                            reports = existing.reportCount
+                else:
+                    # Existing LOW/MEDIUM entry escalated by AI → upgrade in place.
+                    db_scam.risk_level = risk_level
+                    db_scam.scam_type = scam_type
+                    reports = db_scam.reportCount
+                    needs_commit = True
 
         if is_scam:
             results.append({
                 "phone": conv.phone,
-                "type": _scam_type_of(risk_level),
+                "type": "scam",
                 "scam_info": {
                     "scam_type": scam_type,
                     "risk_level": risk_level,
@@ -156,6 +194,9 @@ def check_conversations(
                 "scam_info": None,
                 "user_info": None,
             })
+
+    if needs_commit:
+        db.commit()
 
     return {"results": results}
 
@@ -192,10 +233,10 @@ def get_scam_detail(
     scam_num = db.query(ScamNumber).filter(ScamNumber.phone == norm_phone).first()
     db_user = db.query(User).filter(User.phone == norm_phone).first()
 
-    if scam_num:
+    if scam_num and _is_scam_risk(scam_num.risk_level):
         return {
             "phone": phone,
-            "type": _scam_type_of(scam_num.risk_level),
+            "type": "scam",
             "scam_info": {
                 "scam_type": scam_num.scam_type,
                 "risk_level": scam_num.risk_level,

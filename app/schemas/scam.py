@@ -32,7 +32,7 @@ class UserInfo(BaseModel):
 
 class ScamCheckResult(BaseModel):
     phone: str
-    type: str # 'scam', 'spam', 'unknown', 'normal'
+    type: str # 'scam', 'unknown', 'normal'
     scam_info: Optional[ScamInfo] = None
     user_info: Optional[UserInfo] = None
 
